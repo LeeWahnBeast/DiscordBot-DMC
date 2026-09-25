@@ -21,6 +21,9 @@ DEFAULT_USER = {
     "level": 0,
     "aura": 0.0,
     "deltan": 0,
+    "tickets": 0,
+    "daily_streak": 0,
+    "last_daily_date": "",  # "YYYY-MM-DD" (ngày cuối cùng nhận daily thành công)
 }
 
 
@@ -69,16 +72,50 @@ def create_citizen(guild_id: int, user_id: int, citizen_id: str):
         })
 
 
-# ==================== ĐỒNG BỘ TIKTOK ====================
-def _tiktok_sync_ref():
-    return db.reference("/tiktok_sync")
+# ==================== DAILY ====================
+def _daily_state_ref():
+    return db.reference("/daily_state")
 
 
-def get_tiktok_sync_state() -> dict:
+def get_daily_state() -> dict:
+    """
+    Trạng thái container daily hiện tại trong kênh:
+    {"message_id": int, "date": "YYYY-MM-DD", "message_count": int}
+    """
     with _lock:
-        return _tiktok_sync_ref().get() or {}
+        return _daily_state_ref().get() or {}
 
 
-def save_tiktok_sync_state(data: dict):
+def save_daily_state(data: dict):
     with _lock:
-        _tiktok_sync_ref().set(data)
+        _daily_state_ref().set(data)
+
+
+def increment_daily_message_count() -> int:
+    with _lock:
+        ref = _daily_state_ref().child("message_count")
+        current = ref.get() or 0
+        new_value = current + 1
+        ref.set(new_value)
+        return new_value
+
+
+# ==================== VÉ GAME ====================
+def add_tickets(guild_id: int, user_id: int, amount: int) -> int:
+    with _lock:
+        ref = _user_ref(guild_id, user_id).child("tickets")
+        current = ref.get() or 0
+        new_value = current + amount
+        ref.set(new_value)
+        return new_value
+
+
+def use_ticket(guild_id: int, user_id: int, amount: int = 1) -> bool:
+    """Trừ vé nếu đủ, trả về True nếu thành công, False nếu không đủ vé."""
+    with _lock:
+        ref = _user_ref(guild_id, user_id).child("tickets")
+        current = ref.get() or 0
+        if current < amount:
+            return False
+        ref.set(current - amount)
+        return True
