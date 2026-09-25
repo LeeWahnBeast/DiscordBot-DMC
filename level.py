@@ -221,23 +221,27 @@ class DailyClaimButton(discord.ui.Button):
             )
             return
 
+        # Ack ngay trong 3s đầu tiên (trước khi gọi Firebase) để tránh lỗi
+        # "The application did not respond" nếu Firebase phản hồi chậm.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         try:
             result = await claim_daily(interaction.guild.id, interaction.user.id)
         except firebase.FirebaseUnavailable:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
                 ephemeral=True,
             )
             return
 
         if not result["ok"]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{ICON_WARNING} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"{ICON_CHECK} Bạn nhận được **+{result['deltan_gained']} {ICON_DELTAN} Deltan**! "
             f"🔥 Streak hiện tại: **{result['streak']}** ngày.",
             ephemeral=True,
@@ -622,17 +626,20 @@ class GuessNumberButton(discord.ui.Button):
         if await _reject_if_not_owner(interaction, self.user_id):
             return
 
+        # Ack ngay (deferred update) trước khi gọi Firebase, tránh timeout 3s.
+        await interaction.response.defer()
+
         try:
             spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
                 view=None,
             )
             return
 
         if not spend["ok"]:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=_format_no_ticket_message(spend),
                 view=None,
             )
@@ -644,7 +651,7 @@ class GuessNumberButton(discord.ui.Button):
             text = f"{ICON_CHECK} Chính xác! Số bí mật là **{result['secret']}**. Bạn nhận lại +1 {ICON_TICKET}!"
         else:
             text = f"{ICON_CROSS} Sai rồi! Số bí mật là **{result['secret']}**."
-        await interaction.response.edit_message(content=text, view=None)
+        await interaction.edit_original_response(content=text, view=None)
 
 
 class RPSView(discord.ui.LayoutView):
@@ -675,17 +682,20 @@ class RPSButton(discord.ui.Button):
         if await _reject_if_not_owner(interaction, self.user_id):
             return
 
+        # Ack ngay (deferred update) trước khi gọi Firebase, tránh timeout 3s.
+        await interaction.response.defer()
+
         try:
             spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
                 view=None,
             )
             return
 
         if not spend["ok"]:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=_format_no_ticket_message(spend),
                 view=None,
             )
@@ -700,7 +710,7 @@ class RPSButton(discord.ui.Button):
             text = f"{ICON_WARNING} Hòa! Bot cũng chọn **{result['bot_choice']}**. Vé được hoàn lại."
         else:
             text = f"{ICON_CROSS} Bạn thua! Bot chọn **{result['bot_choice']}**."
-        await interaction.response.edit_message(content=text, view=None)
+        await interaction.edit_original_response(content=text, view=None)
 
 
 class DiceView(discord.ui.LayoutView):
@@ -730,17 +740,20 @@ class DiceButton(discord.ui.Button):
         if await _reject_if_not_owner(interaction, self.user_id):
             return
 
+        # Ack ngay (deferred update) trước khi gọi Firebase, tránh timeout 3s.
+        await interaction.response.defer()
+
         try:
             spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
                 view=None,
             )
             return
 
         if not spend["ok"]:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=_format_no_ticket_message(spend),
                 view=None,
             )
@@ -752,4 +765,4 @@ class DiceButton(discord.ui.Button):
             text = f"{ICON_CHECK} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán đúng, nhận lại +1 {ICON_TICKET}!"
         else:
             text = f"{ICON_CROSS} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán sai."
-        await interaction.response.edit_message(content=text, view=None)
+        await interaction.edit_original_response(content=text, view=None)
