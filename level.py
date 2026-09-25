@@ -6,10 +6,19 @@ Bảng xếp hạng, Thú tội ẩn danh).
 import time
 import random
 import string
+import datetime
 
 import discord
 
 import firebase
+
+# Server chạy bot (Render) dùng giờ UTC, nhưng daily/streak phải theo giờ Việt
+# Nam (UTC+7) chứ không phải giờ hệ thống — cố định offset vì VN không có DST.
+VN_TZ = datetime.timezone(datetime.timedelta(hours=7))
+
+
+def now_vn() -> datetime.datetime:
+    return datetime.datetime.now(VN_TZ)
 
 # ==================== ICON ====================
 ICON_XP = "<:xp:1553010318861537380>"
@@ -120,18 +129,18 @@ def generate_citizen_id() -> str:
 
 
 # ==================== DAILY ====================
-def is_daily_open(now: time.struct_time | None = None) -> bool:
-    """Daily mở từ 0:00 đến trước 10:00 sáng (giờ hệ thống của máy chủ chạy bot)."""
-    hour = (now or time.localtime()).tm_hour
+def is_daily_open(now: datetime.datetime | None = None) -> bool:
+    """Daily mở từ 0:00 đến trước 10:00 sáng, theo giờ Việt Nam (UTC+7)."""
+    hour = (now or now_vn()).hour
     return DAILY_OPEN_HOUR <= hour < DAILY_CLOSE_HOUR
 
 
 def today_str() -> str:
-    return time.strftime("%Y-%m-%d", time.localtime())
+    return now_vn().strftime("%Y-%m-%d")
 
 
 def yesterday_str() -> str:
-    return time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+    return (now_vn() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 async def claim_daily(guild_id: int, user_id: int) -> dict:
@@ -396,7 +405,10 @@ class CitizenView(discord.ui.LayoutView):
         joined_at = member.joined_at.strftime("%d/%m/%Y") if member.joined_at else "Không rõ"
         citizen_id = citizen_data.get("citizen_id", "N/A")
         created_at = citizen_data.get("created_at")
-        created_text = time.strftime("%d/%m/%Y %H:%M", time.localtime(created_at)) if created_at else "N/A"
+        created_text = (
+            datetime.datetime.fromtimestamp(created_at, VN_TZ).strftime("%d/%m/%Y %H:%M")
+            if created_at else "N/A"
+        )
 
         header_lines = [
             "## 🪪 HỒ SƠ CÔNG DÂN" + (" · *mới tạo* ✨" if is_new else ""),
@@ -601,6 +613,19 @@ def _format_no_ticket_message(result: dict) -> str:
     return base
 
 
+class GameResultView(discord.ui.LayoutView):
+    """Container Components V2 dùng để hiển thị kết quả cuối game (thay cho
+    content=... vì message gốc đã bật cờ IS_COMPONENTS_V2 — không thể trộn
+    content thường với Components V2, phải sửa lại bằng 1 container khác)."""
+    def __init__(self, text: str):
+        super().__init__(timeout=None)
+        container = discord.ui.Container(
+            discord.ui.TextDisplay(text),
+            accent_color=discord.Colour.blurple(),
+        )
+        self.add_item(container)
+
+
 class GuessNumberView(discord.ui.LayoutView):
     def __init__(self, guild_id: int, user_id: int):
         super().__init__(timeout=60)
@@ -633,15 +658,13 @@ class GuessNumberButton(discord.ui.Button):
             spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
             await interaction.edit_original_response(
-                content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
-                view=None,
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
             )
             return
 
         if not spend["ok"]:
             await interaction.edit_original_response(
-                content=_format_no_ticket_message(spend),
-                view=None,
+                view=GameResultView(_format_no_ticket_message(spend)),
             )
             return
 
@@ -651,7 +674,7 @@ class GuessNumberButton(discord.ui.Button):
             text = f"{ICON_CHECK} Chính xác! Số bí mật là **{result['secret']}**. Bạn nhận lại +1 {ICON_TICKET}!"
         else:
             text = f"{ICON_CROSS} Sai rồi! Số bí mật là **{result['secret']}**."
-        await interaction.edit_original_response(content=text, view=None)
+        await interaction.edit_original_response(view=GameResultView(text))
 
 
 class RPSView(discord.ui.LayoutView):
@@ -689,15 +712,13 @@ class RPSButton(discord.ui.Button):
             spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
             await interaction.edit_original_response(
-                content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
-                view=None,
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
             )
             return
 
         if not spend["ok"]:
             await interaction.edit_original_response(
-                content=_format_no_ticket_message(spend),
-                view=None,
+                view=GameResultView(_format_no_ticket_message(spend)),
             )
             return
 
@@ -710,7 +731,7 @@ class RPSButton(discord.ui.Button):
             text = f"{ICON_WARNING} Hòa! Bot cũng chọn **{result['bot_choice']}**. Vé được hoàn lại."
         else:
             text = f"{ICON_CROSS} Bạn thua! Bot chọn **{result['bot_choice']}**."
-        await interaction.edit_original_response(content=text, view=None)
+        await interaction.edit_original_response(view=GameResultView(text))
 
 
 class DiceView(discord.ui.LayoutView):
@@ -747,15 +768,13 @@ class DiceButton(discord.ui.Button):
             spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
             await interaction.edit_original_response(
-                content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
-                view=None,
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
             )
             return
 
         if not spend["ok"]:
             await interaction.edit_original_response(
-                content=_format_no_ticket_message(spend),
-                view=None,
+                view=GameResultView(_format_no_ticket_message(spend)),
             )
             return
 
@@ -765,4 +784,4 @@ class DiceButton(discord.ui.Button):
             text = f"{ICON_CHECK} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán đúng, nhận lại +1 {ICON_TICKET}!"
         else:
             text = f"{ICON_CROSS} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán sai."
-        await interaction.edit_original_response(content=text, view=None)
+        await interaction.edit_original_response(view=GameResultView(text))
