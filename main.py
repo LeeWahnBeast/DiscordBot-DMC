@@ -167,8 +167,24 @@ async def on_ready():
 async def main():
     firebase.init_firebase()
     log.info("Đã kết nối Firebase Realtime Database.")
-    async with bot:
-        await bot.start(DISCORD_TOKEN)
+
+    # Retry có chờ khi login bị Discord rate-limit (429), tránh crash-loop
+    # càng làm nặng thêm rate limit (Render tự restart process ngay khi bot thoát).
+    delay = 30
+    max_delay = 300
+    while True:
+        try:
+            async with bot:
+                await bot.start(DISCORD_TOKEN)
+            return  # bot.start thoát bình thường (ví dụ do logout) -> dừng hẳn
+        except discord.HTTPException as e:
+            if e.status == 429:
+                retry_after = getattr(e, "retry_after", None) or delay
+                log.warning(f"Bị Discord rate-limit (429) khi login. Chờ {retry_after:.0f}s rồi thử lại...")
+                await asyncio.sleep(retry_after)
+                delay = min(delay * 2, max_delay)
+                continue
+            raise
 
 
 if __name__ == "__main__":
