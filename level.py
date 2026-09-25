@@ -50,8 +50,10 @@ DAILY_CLOSE_HOUR = 10  # đến 10:00 sáng
 DAILY_REWARD_DELTAN = 5
 DAILY_MAX_MESSAGES_BEFORE_RESEND = 30  # quá 30 tin nhắn thì gửi lại container mới
 
-# ==================== CẤU HÌNH VÉ GAME ====================
-GAME_TICKET_COST = 1  # số vé tốn mỗi lượt chơi bất kỳ mini game nào
+# ==================== CẤU HÌNH VÉ GAME (bình vé hồi theo giờ) ====================
+GAME_TICKET_COST = 1        # số vé tốn mỗi lượt chơi bất kỳ mini game nào
+TICKETS_MAX = 5             # tối đa 5 vé (reset đầy mỗi ngày mới)
+TICKETS_REGEN_SECONDS = 3 * 60 * 60  # mỗi vé đã dùng hồi lại sau 3 tiếng
 
 # ==================== CẤU HÌNH THÚ TỘI ẨN DANH ====================
 CONFESSION_CHANNEL_ID = 1539855082210861126
@@ -444,7 +446,7 @@ class LevelView(discord.ui.LayoutView):
             f"{ICON_XP} **Tổng XP:** {xp:,}",
             f"{ICON_AURA} **Aura:** {user_data.get('aura', 0.0)}",
             f"{ICON_DELTAN} **Deltan:** {user_data.get('deltan', 0):,}",
-            f"{ICON_TICKET} **Vé game:** {user_data.get('tickets', 0):,}",
+            f"{ICON_TICKET} **Vé game:** {user_data.get('tickets', 0)}/{TICKETS_MAX}",
         ]
 
         container = discord.ui.Container(
@@ -495,16 +497,17 @@ class ConfessionView(discord.ui.LayoutView):
         super().__init__(timeout=None)
 
         lines = [
-            f"### Lời Thú Tội Ẩn Danh #{confession_number}",
+            f"**Lời Thú Tội Ẩn Danh #{confession_number}**",
             content,
             "",
-            f"-# ID: {confession_id} · <t:{int(sent_at)}:f>",
+            f"-# ID: {confession_id} ·",
+            f"-# <t:{int(sent_at)}:F>",
             "-# Thú tội ẩn danh · không thể truy ra người gửi",
         ]
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
-            accent_color=discord.Colour.dark_purple(),
+            accent_color=discord.Colour.dark_grey(),
         )
         self.add_item(container)
 
@@ -573,8 +576,25 @@ class GameChoiceButton(discord.ui.Button):
             )
 
 
-async def _spend_ticket_or_none(guild_id: int, user_id: int) -> bool:
-    return await firebase.use_ticket(guild_id, user_id, GAME_TICKET_COST)
+async def _spend_ticket_or_none(guild_id: int, user_id: int) -> dict:
+    """Trả về dict {"ok": bool, "tickets": int, "next_regen_in": int|None} từ firebase.use_ticket."""
+    return await firebase.use_ticket(
+        guild_id, user_id, GAME_TICKET_COST, TICKETS_MAX, TICKETS_REGEN_SECONDS, today_str()
+    )
+
+
+def _format_no_ticket_message(result: dict) -> str:
+    """Thông báo khi hết vé, kèm thời gian hồi vé kế tiếp nếu có."""
+    base = f"{ICON_CROSS} Vé = 0 thì ko thể chơi 😂😂"
+    next_in = result.get("next_regen_in")
+    if next_in and next_in > 0:
+        hours = next_in // 3600
+        minutes = (next_in % 3600) // 60
+        if hours > 0:
+            base += f"\n-# Vé kế tiếp hồi sau khoảng **{hours} giờ {minutes} phút** nữa."
+        else:
+            base += f"\n-# Vé kế tiếp hồi sau khoảng **{minutes} phút** nữa."
+    return base
 
 
 class GuessNumberView(discord.ui.LayoutView):
@@ -603,7 +623,7 @@ class GuessNumberButton(discord.ui.Button):
             return
 
         try:
-            spent = await _spend_ticket_or_none(self.guild_id, self.user_id)
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
             await interaction.response.edit_message(
                 content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
@@ -611,9 +631,9 @@ class GuessNumberButton(discord.ui.Button):
             )
             return
 
-        if not spent:
+        if not spend["ok"]:
             await interaction.response.edit_message(
-                content=f"{ICON_CROSS} Bạn không đủ vé game! Cần {GAME_TICKET_COST} {ICON_TICKET}.",
+                content=_format_no_ticket_message(spend),
                 view=None,
             )
             return
@@ -656,7 +676,7 @@ class RPSButton(discord.ui.Button):
             return
 
         try:
-            spent = await _spend_ticket_or_none(self.guild_id, self.user_id)
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
             await interaction.response.edit_message(
                 content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
@@ -664,9 +684,9 @@ class RPSButton(discord.ui.Button):
             )
             return
 
-        if not spent:
+        if not spend["ok"]:
             await interaction.response.edit_message(
-                content=f"{ICON_CROSS} Bạn không đủ vé game! Cần {GAME_TICKET_COST} {ICON_TICKET}.",
+                content=_format_no_ticket_message(spend),
                 view=None,
             )
             return
@@ -711,7 +731,7 @@ class DiceButton(discord.ui.Button):
             return
 
         try:
-            spent = await _spend_ticket_or_none(self.guild_id, self.user_id)
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
         except firebase.FirebaseUnavailable:
             await interaction.response.edit_message(
                 content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
@@ -719,9 +739,9 @@ class DiceButton(discord.ui.Button):
             )
             return
 
-        if not spent:
+        if not spend["ok"]:
             await interaction.response.edit_message(
-                content=f"{ICON_CROSS} Bạn không đủ vé game! Cần {GAME_TICKET_COST} {ICON_TICKET}.",
+                content=_format_no_ticket_message(spend),
                 view=None,
             )
             return

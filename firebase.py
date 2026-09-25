@@ -35,7 +35,9 @@ DEFAULT_USER = {
     "level": 0,
     "aura": 0.0,
     "deltan": 0,
-    "tickets": 0,
+    "tickets": 5,
+    "tickets_last_regen": 0.0,  # timestamp lần hồi vé gần nhất (tính lazy)
+    "tickets_date": "",         # "YYYY-MM-DD" ngày bình vé được reset đầy gần nhất
     "daily_streak": 0,
     "last_daily_date": "",  # "YYYY-MM-DD" (ngày cuối cùng nhận daily thành công)
 }
@@ -234,7 +236,7 @@ async def increment_daily_message_count() -> int:
     return await _run(_increment_daily_message_count_sync)
 
 
-# ==================== VÉ GAME (atomic bằng transaction) ====================
+# ==================== VÉ GAME (bình vé hồi theo giờ, atomic) ====================
 def _add_tickets_sync(guild_id: int, user_id: int, amount: int) -> int:
     ref = _user_ref(guild_id, user_id).child("tickets")
 
@@ -249,30 +251,101 @@ async def add_tickets(guild_id: int, user_id: int, amount: int) -> int:
     return await _run(_add_tickets_sync, guild_id, user_id, amount)
 
 
-def _use_ticket_sync(guild_id: int, user_id: int, amount: int) -> bool:
+def _regen_tickets(data: dict, now: float, max_tickets: int, regen_seconds: int, today: str) -> dict:
     """
-    Trừ vé bằng Firebase transaction (atomic thật sự — tránh race condition
-    khi 2 request trừ vé chạy song song và đều đọc cùng 1 giá trị cũ, dẫn tới
-    trừ vé âm hoặc trừ 2 lần cho 1 lượt chơi).
-    Trả về True nếu trừ thành công, False nếu không đủ vé.
+    Tính lại số vé hiện tại của user theo cơ chế "bình vé":
+      - Mỗi ngày mới (so với tickets_date lưu trong data) reset về đầy bình.
+      - Trong ngày, mỗi `regen_seconds` giây thì hồi thêm 1 vé (không vượt
+        quá max_tickets), tính lazy dựa trên tickets_last_regen thay vì cần
+        1 task chạy nền riêng.
+    Trả về data đã cập nhật field "tickets", "tickets_last_regen", "tickets_date".
     """
-    ref = _user_ref(guild_id, user_id).child("tickets")
-    ok = {"value": False}
+    last_date = data.get("tickets_date", "")
+    tickets = data.get("tickets", max_tickets)
+    last_regen = data.get("tickets_last_regen", now)
+
+    if last_date != today:
+        # Sang ngày mới: reset đầy bình.
+        tickets = max_tickets
+        last_regen = now
+    elif tickets < max_tickets:
+        elapsed = max(0, now - last_regen)
+        regenerated = int(elapsed // regen_seconds)
+        if regenerated > 0:
+            tickets = min(max_tickets, tickets + regenerated)
+            last_regen = last_regen + regenerated * regen_seconds
+
+    data["tickets"] = tickets
+    data["tickets_last_regen"] = last_regen
+    data["tickets_date"] = today
+    return data
+
+
+def _get_ticket_state_sync(guild_id: int, user_id: int, max_tickets: int, regen_seconds: int, today: str) -> dict:
+    """
+    Đọc số vé hiện tại của user, tự động áp dụng hồi vé nếu cần, rồi lưu lại
+    Firebase nếu có thay đổi (để tickets_last_regen luôn phản ánh đúng).
+    Trả về dict user đầy đủ (đã tính hồi vé).
+    """
+    ref = _user_ref(guild_id, user_id)
+    data = ref.get() or dict(DEFAULT_USER)
+    for k, v in DEFAULT_USER.items():
+        data.setdefault(k, v)
+
+    before = (data.get("tickets"), data.get("tickets_date"))
+    data = _regen_tickets(data, time.time(), max_tickets, regen_seconds, today)
+    after = (data.get("tickets"), data.get("tickets_date"))
+
+    if before != after:
+        ref.update({
+            "tickets": data["tickets"],
+            "tickets_last_regen": data["tickets_last_regen"],
+            "tickets_date": data["tickets_date"],
+        })
+    return data
+
+
+async def get_ticket_state(guild_id: int, user_id: int, max_tickets: int, regen_seconds: int, today: str) -> dict:
+    return await _run(_get_ticket_state_sync, guild_id, user_id, max_tickets, regen_seconds, today)
+
+
+def _use_ticket_sync(guild_id: int, user_id: int, amount: int, max_tickets: int, regen_seconds: int, today: str) -> dict:
+    """
+    Trừ vé bằng Firebase transaction (atomic — tránh 2 request trừ vé cùng
+    lúc gây trừ âm hoặc trừ 2 lần cho 1 lượt chơi). Trước khi trừ, áp dụng
+    hồi vé theo thời gian ngay trong transaction để luôn nhất quán.
+    Trả về {"ok": bool, "tickets": int, "next_regen_in": int|None}
+    next_regen_in là số giây còn lại tới khi vé kế tiếp hồi (None nếu đã đầy bình).
+    """
+    ref = _user_ref(guild_id, user_id)
+    result_box = {"ok": False, "tickets": 0, "next_regen_in": None}
 
     def txn(current):
-        current = current or 0
-        if current < amount:
-            ok["value"] = False
-            return current  # không đổi gì
-        ok["value"] = True
-        return current - amount
+        data = dict(current) if current else dict(DEFAULT_USER)
+        for k, v in DEFAULT_USER.items():
+            data.setdefault(k, v)
+
+        data = _regen_tickets(data, time.time(), max_tickets, regen_seconds, today)
+
+        if data["tickets"] < amount:
+            result_box["ok"] = False
+            result_box["tickets"] = data["tickets"]
+            remaining = regen_seconds - ((time.time() - data["tickets_last_regen"]) % regen_seconds)
+            result_box["next_regen_in"] = int(remaining)
+            return data  # không trừ gì, nhưng vẫn lưu lại tickets đã hồi
+
+        data["tickets"] -= amount
+        result_box["ok"] = True
+        result_box["tickets"] = data["tickets"]
+        result_box["next_regen_in"] = None if data["tickets"] >= max_tickets else int(regen_seconds - ((time.time() - data["tickets_last_regen"]) % regen_seconds))
+        return data
 
     ref.transaction(txn)
-    return ok["value"]
+    return result_box
 
 
-async def use_ticket(guild_id: int, user_id: int, amount: int = 1) -> bool:
-    return await _run(_use_ticket_sync, guild_id, user_id, amount)
+async def use_ticket(guild_id: int, user_id: int, amount: int, max_tickets: int, regen_seconds: int, today: str) -> dict:
+    return await _run(_use_ticket_sync, guild_id, user_id, amount, max_tickets, regen_seconds, today)
 
 
 # ==================== THÚ TỘI ẨN DANH (chống trùng ID) ====================

@@ -221,29 +221,8 @@ async def before_tiktok_sync_task():
     await bot.wait_until_ready()
 
 
-@bot.tree.command(name="đồng-bộ-tiktok", description="Đồng bộ ngay tên & avatar bot theo TikTok")
-async def sync_tiktok_command(interaction: discord.Interaction):
-    if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message(
-            "Bạn cần quyền Manage Server để dùng lệnh này.", ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(thinking=True)
-    result = await sync_tiktok_name(force=True)
-
-    if not result["ok"]:
-        await interaction.followup.send(f"❌ {result['reason']}")
-        return
-
-    if result["changed"]:
-        msg = f"✅ Đã cập nhật tên bot theo TikTok @{TIKTOK_USERNAME}: **{result['bot_name']}**"
-        if result.get("errors"):
-            msg += "\n⚠️ " + "; ".join(result["errors"])
-    else:
-        msg = f"ℹ️ TikTok @{TIKTOK_USERNAME} chưa có gì thay đổi."
-
-    await interaction.followup.send(msg)
+# Lệnh /đồng-bộ-tiktok thủ công đã bị xoá — tiktok_sync_task tự động chạy
+# định kỳ mỗi TIKTOK_CHECK_INTERVAL_SECONDS nên không cần bấm tay nữa.
 
 
 # ==================== LỆNH /level ====================
@@ -257,7 +236,11 @@ async def level_command(interaction: discord.Interaction, thành_viên: discord.
     member = thành_viên or interaction.user
     await interaction.response.defer(thinking=True)
     try:
-        user_data = await firebase.get_user(interaction.guild.id, member.id)
+        # Dùng get_ticket_state để số vé hiển thị đã tính hồi theo giờ, không
+        # phải giá trị Firebase thô có thể chưa cập nhật từ lần dùng vé cuối.
+        user_data = await firebase.get_ticket_state(
+            interaction.guild.id, member.id, level.TICKETS_MAX, level.TICKETS_REGEN_SECONDS, level.today_str()
+        )
     except firebase.FirebaseUnavailable:
         await interaction.followup.send("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!")
         return
@@ -296,14 +279,20 @@ async def game_command(interaction: discord.Interaction):
         return
 
     try:
-        user_data = await firebase.get_user(interaction.guild.id, interaction.user.id)
+        # Đọc số vé đã tính hồi theo giờ (không phải giá trị cũ chưa cập nhật).
+        user_data = await firebase.get_ticket_state(
+            interaction.guild.id, interaction.user.id,
+            level.TICKETS_MAX, level.TICKETS_REGEN_SECONDS, level.today_str(),
+        )
     except firebase.FirebaseUnavailable:
         await interaction.response.send_message("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!", ephemeral=True)
         return
 
     tickets = user_data.get("tickets", 0)
+    # Gửi CÔNG KHAI để cả kênh thấy ai đang chơi, nhưng nút chỉ chủ ván mới bấm được
+    # (GameSelectView/_reject_if_not_owner đã chặn người khác ở tầng callback).
     await interaction.response.send_message(
-        view=level.GameSelectView(interaction.user.id, tickets), ephemeral=True
+        view=level.GameSelectView(interaction.user.id, tickets)
     )
 
 
@@ -392,6 +381,44 @@ async def daily_container_task():
 @daily_container_task.before_loop
 async def before_daily_container_task():
     await bot.wait_until_ready()
+
+
+# ==================== LỆNH /daily ====================
+@bot.tree.command(name="daily", description="Nhận Deltan điểm danh hằng ngày — dùng được ở bất kỳ đâu")
+async def daily_command(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    if not level.is_daily_open():
+        await interaction.response.send_message(
+            f"{level.ICON_CROSS} Daily chỉ mở từ {level.DAILY_OPEN_HOUR:02d}:00 đến "
+            f"{level.DAILY_CLOSE_HOUR:02d}:00 sáng thôi nha!",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        result = await level.claim_daily(interaction.guild.id, interaction.user.id)
+    except firebase.FirebaseUnavailable:
+        await interaction.response.send_message(
+            f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+            ephemeral=True,
+        )
+        return
+
+    if not result["ok"]:
+        await interaction.response.send_message(
+            f"{level.ICON_WARNING} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"{level.ICON_CHECK} Bạn nhận được **+{result['deltan_gained']} {level.ICON_DELTAN} Deltan**! "
+        f"🔥 Streak hiện tại: **{result['streak']}** ngày.",
+        ephemeral=True,
+    )
 
 
 # ==================== LỆNH /công-dân ====================
