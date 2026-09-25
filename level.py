@@ -1,5 +1,6 @@
 """
-Logic XP / Level / Aura / Deltan + giao diện Components V2 (LevelUp, Hồ sơ công dân).
+Logic XP / Level / Aura / Deltan + giao diện Components V2 (LevelUp, Hồ sơ công dân,
+Bảng xếp hạng, Thú tội ẩn danh).
 """
 
 import time
@@ -36,6 +37,10 @@ VOICE_IGNORE_AFK_CHANNEL = True
 LEVEL_UP_DELTAN_BONUS = 15
 LEVEL_UP_AURA_BASE_PERCENT = 0.5
 
+# Giới hạn an toàn: nếu 1 user có total_xp vượt mốc này, không cố tính level
+# bằng vòng lặp cộng dồn nữa (tránh loop cực lâu / DoS do dữ liệu bất thường).
+MAX_SANE_TOTAL_XP = 5_000_000_000
+
 CITIZEN_ROLE_NAME = "Công Dân"
 
 # ==================== CẤU HÌNH DAILY ====================
@@ -48,6 +53,18 @@ DAILY_MAX_MESSAGES_BEFORE_RESEND = 30  # quá 30 tin nhắn thì gửi lại con
 # ==================== CẤU HÌNH VÉ GAME ====================
 GAME_TICKET_COST = 1  # số vé tốn mỗi lượt chơi bất kỳ mini game nào
 
+# ==================== CẤU HÌNH THÚ TỘI ẨN DANH ====================
+CONFESSION_CHANNEL_ID = 1539855082210861126
+
+# ==================== CẤU HÌNH BẢNG XẾP HẠNG ====================
+LEADERBOARD_FIELDS = {
+    "deltan": {"label": "Deltan", "icon": ICON_DELTAN, "fmt": lambda v: f"{int(v):,}"},
+    "level": {"label": "Level", "icon": ICON_LEVEL, "fmt": lambda v: f"{int(v):,}"},
+    "aura": {"label": "Aura", "icon": ICON_AURA, "fmt": lambda v: f"{v:,.2f}"},
+}
+LEADERBOARD_SIZE = 10
+_RANK_MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
 
 # ==================== CÔNG THỨC XP / LEVEL (kiểu MEE6) ====================
 def xp_required_for_level(level: int) -> int:
@@ -55,6 +72,12 @@ def xp_required_for_level(level: int) -> int:
 
 
 def level_from_total_xp(total_xp: int):
+    """
+    Trả về (level, xp_trong_level_hiện_tại, xp_cần_để_lên_level_kế).
+    Dùng vòng lặp nhưng chặn ở MAX_SANE_TOTAL_XP để không bao giờ loop vô hạn
+    / quá lâu nếu dữ liệu XP bị hỏng hoặc bị thao túng bất thường.
+    """
+    total_xp = max(0, min(int(total_xp), MAX_SANE_TOTAL_XP))
     level = 0
     remaining = total_xp
     while True:
@@ -70,40 +93,16 @@ def aura_bonus_for_level(new_level: int) -> float:
 
 
 # ==================== CỘNG XP ====================
-def add_xp(guild_id: int, user_id: int, amount: int) -> dict:
-    user = firebase.get_user(guild_id, user_id)
-    old_xp = user.get("xp", 0)
-    old_level, _, _ = level_from_total_xp(old_xp)
-
-    new_xp = old_xp + amount
-    new_level, _, _ = level_from_total_xp(new_xp)
-    levels_gained = new_level - old_level
-
-    deltan_gained = 0
-    aura_gained = 0.0
-    if levels_gained > 0:
-        for lvl in range(old_level + 1, new_level + 1):
-            deltan_gained += LEVEL_UP_DELTAN_BONUS
-            aura_gained += aura_bonus_for_level(lvl)
-
-    updated = {
-        "xp": new_xp,
-        "level": new_level,
-        "deltan": user.get("deltan", 0) + deltan_gained,
-        "aura": round(user.get("aura", 0.0) + aura_gained, 2),
-    }
-    firebase.save_user(guild_id, user_id, updated)
-
-    merged = dict(user)
-    merged.update(updated)
-
-    return {
-        "leveled_up": levels_gained > 0,
-        "new_level": new_level,
-        "deltan_gained": deltan_gained,
-        "aura_gained": aura_gained,
-        "user": merged,
-    }
+async def add_xp(guild_id: int, user_id: int, amount: int) -> dict:
+    """
+    Cộng XP bằng Firebase transaction nguyên tử (đọc-tính-ghi trong 1 bước ở
+    tầng Firebase) — tránh mất XP/level khi tin nhắn và voice XP cộng cùng
+    lúc cho cùng 1 user (trước đây get() rồi update() riêng lẻ có thể bị
+    ghi đè nếu 2 event chạy gần như đồng thời).
+    """
+    return await firebase.add_xp_atomic(
+        guild_id, user_id, amount, level_from_total_xp, aura_bonus_for_level, LEVEL_UP_DELTAN_BONUS
+    )
 
 
 def random_message_xp() -> int:
@@ -133,14 +132,14 @@ def yesterday_str() -> str:
     return time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
 
 
-def claim_daily(guild_id: int, user_id: int) -> dict:
+async def claim_daily(guild_id: int, user_id: int) -> dict:
     """
     Xử lý nhận daily cho user. Trả về:
       {"ok": True/False, "reason": str nếu False,
        "streak": int, "deltan_gained": int, "total_deltan": int}
     Cộng dồn streak nếu nhận liên tục mỗi ngày; nếu bỏ lỡ 1 ngày thì streak reset về 1.
     """
-    user = firebase.get_user(guild_id, user_id)
+    user = await firebase.get_user(guild_id, user_id)
     today = today_str()
 
     if user.get("last_daily_date") == today:
@@ -153,7 +152,7 @@ def claim_daily(guild_id: int, user_id: int) -> dict:
         streak = 1
 
     new_deltan = user.get("deltan", 0) + DAILY_REWARD_DELTAN
-    firebase.save_user(guild_id, user_id, {
+    await firebase.save_user(guild_id, user_id, {
         "deltan": new_deltan,
         "daily_streak": streak,
         "last_daily_date": today,
@@ -167,9 +166,9 @@ def claim_daily(guild_id: int, user_id: int) -> dict:
     }
 
 
-def daily_status_icon(guild_id: int, user_id: int) -> str:
+async def daily_status_icon(guild_id: int, user_id: int) -> str:
     """Icon trạng thái daily hôm nay của 1 user: đã nhận / chưa nhận / cảnh báo sắp lỡ."""
-    user = firebase.get_user(guild_id, user_id)
+    user = await firebase.get_user(guild_id, user_id)
     today = today_str()
     if user.get("last_daily_date") == today:
         return ICON_CHECK
@@ -220,7 +219,15 @@ class DailyClaimButton(discord.ui.Button):
             )
             return
 
-        result = claim_daily(interaction.guild.id, interaction.user.id)
+        try:
+            result = await claim_daily(interaction.guild.id, interaction.user.id)
+        except firebase.FirebaseUnavailable:
+            await interaction.response.send_message(
+                f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+                ephemeral=True,
+            )
+            return
+
         if not result["ok"]:
             await interaction.response.send_message(
                 f"{ICON_WARNING} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
@@ -450,36 +457,105 @@ class LevelView(discord.ui.LayoutView):
         self.add_item(container)
 
 
+# ==================== BẢNG XẾP HẠNG ====================
+class LeaderboardView(discord.ui.LayoutView):
+    """Hiển thị top 10 theo Deltan / Level / Aura, dùng cho lệnh /bảng-xếp-hạng."""
+
+    def __init__(self, guild: discord.Guild, field: str, ranked: list[tuple[int, dict]]):
+        super().__init__(timeout=None)
+        meta = LEADERBOARD_FIELDS[field]
+
+        lines = [f"## 🏆 BẢNG XẾP HẠNG — {meta['label'].upper()}"]
+
+        if not ranked:
+            lines.append("*Chưa có dữ liệu nào để xếp hạng.*")
+        else:
+            for i, (user_id, data) in enumerate(ranked, start=1):
+                medal = _RANK_MEDALS.get(i, f"`#{i}`")
+                member = guild.get_member(user_id)
+                name = member.mention if member else f"`{user_id}`"
+                value = meta["fmt"](data.get(field, 0) or 0)
+                lines.append(f"{medal} {name} — **{value}** {meta['icon']}")
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            accent_color=discord.Colour.gold(),
+        )
+        self.add_item(container)
+
+
+# ==================== THÚ TỘI ẨN DANH ====================
+class ConfessionView(discord.ui.LayoutView):
+    """
+    Container hiển thị 1 thú tội ẩn danh — hoàn toàn không kèm tên/avatar người
+    gửi. `confession_id` chỉ là mã ngẫu nhiên không thể tra ngược ra người gửi.
+    """
+
+    def __init__(self, content: str, confession_number: int, confession_id: str, sent_at: float):
+        super().__init__(timeout=None)
+
+        lines = [
+            f"### Lời Thú Tội Ẩn Danh #{confession_number}",
+            content,
+            "",
+            f"-# ID: {confession_id} · <t:{int(sent_at)}:f>",
+            "-# Thú tội ẩn danh · không thể truy ra người gửi",
+        ]
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            accent_color=discord.Colour.dark_purple(),
+        )
+        self.add_item(container)
+
+
+# ==================== VÉ GAME / MINI GAME (owner-checked) ====================
 class GameSelectView(discord.ui.LayoutView):
     """Menu chọn mini game cho lệnh /game."""
 
-    def __init__(self, tickets: int):
+    def __init__(self, owner_id: int, tickets: int):
         super().__init__(timeout=60)
+        self.owner_id = owner_id
         lines = [
-            f"## 🎮 MINI GAME",
+            "## 🎮 MINI GAME",
             f"{ICON_TICKET} Vé của bạn: **{tickets}**  •  Mỗi lượt chơi tốn **{GAME_TICKET_COST}** {ICON_TICKET}",
             "-# Chọn một trò chơi bên dưới:",
         ]
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
             discord.ui.ActionRow(
-                GameChoiceButton("guess", "Đoán Số", "🔢"),
-                GameChoiceButton("rps", "Kéo Búa Bao", "✊"),
-                GameChoiceButton("dice", "Xúc Xắc", "🎲"),
+                GameChoiceButton(owner_id, "guess", "Đoán Số", "🔢"),
+                GameChoiceButton(owner_id, "rps", "Kéo Búa Bao", "✊"),
+                GameChoiceButton(owner_id, "dice", "Xúc Xắc", "🎲"),
             ),
             accent_color=discord.Colour.blurple(),
         )
         self.add_item(container)
 
 
+async def _reject_if_not_owner(interaction: discord.Interaction, owner_id: int) -> bool:
+    """Trả về True (và đã trả lời interaction) nếu người bấm KHÔNG phải chủ ván chơi."""
+    if interaction.user.id != owner_id:
+        await interaction.response.send_message(
+            f"{ICON_CROSS} Đây không phải ván chơi của bạn! Dùng lệnh `/game` để tạo ván riêng nhé.",
+            ephemeral=True,
+        )
+        return True
+    return False
+
+
 class GameChoiceButton(discord.ui.Button):
-    def __init__(self, game_key: str, label: str, emoji: str):
+    def __init__(self, owner_id: int, game_key: str, label: str, emoji: str):
         super().__init__(label=label, style=discord.ButtonStyle.primary, emoji=emoji)
+        self.owner_id = owner_id
         self.game_key = game_key
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
             return
+        if await _reject_if_not_owner(interaction, self.owner_id):
+            return
+
         if self.game_key == "guess":
             await interaction.response.send_message(
                 view=GuessNumberView(interaction.guild.id, interaction.user.id),
@@ -497,8 +573,8 @@ class GameChoiceButton(discord.ui.Button):
             )
 
 
-def _spend_ticket_or_none(guild_id: int, user_id: int) -> bool:
-    return firebase.use_ticket(guild_id, user_id, GAME_TICKET_COST)
+async def _spend_ticket_or_none(guild_id: int, user_id: int) -> bool:
+    return await firebase.use_ticket(guild_id, user_id, GAME_TICKET_COST)
 
 
 class GuessNumberView(discord.ui.LayoutView):
@@ -523,15 +599,28 @@ class GuessNumberButton(discord.ui.Button):
         self.guild_id, self.user_id, self.number = guild_id, user_id, number
 
     async def callback(self, interaction: discord.Interaction):
-        if not _spend_ticket_or_none(self.guild_id, self.user_id):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        try:
+            spent = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.response.edit_message(
+                content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+                view=None,
+            )
+            return
+
+        if not spent:
             await interaction.response.edit_message(
                 content=f"{ICON_CROSS} Bạn không đủ vé game! Cần {GAME_TICKET_COST} {ICON_TICKET}.",
                 view=None,
             )
             return
+
         result = play_guess_number(self.number)
         if result["win"]:
-            firebase.add_tickets(self.guild_id, self.user_id, 1)
+            await firebase.add_tickets(self.guild_id, self.user_id, 1)
             text = f"{ICON_CHECK} Chính xác! Số bí mật là **{result['secret']}**. Bạn nhận lại +1 {ICON_TICKET}!"
         else:
             text = f"{ICON_CROSS} Sai rồi! Số bí mật là **{result['secret']}**."
@@ -563,18 +652,31 @@ class RPSButton(discord.ui.Button):
         self.guild_id, self.user_id, self.choice = guild_id, user_id, choice
 
     async def callback(self, interaction: discord.Interaction):
-        if not _spend_ticket_or_none(self.guild_id, self.user_id):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        try:
+            spent = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.response.edit_message(
+                content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+                view=None,
+            )
+            return
+
+        if not spent:
             await interaction.response.edit_message(
                 content=f"{ICON_CROSS} Bạn không đủ vé game! Cần {GAME_TICKET_COST} {ICON_TICKET}.",
                 view=None,
             )
             return
+
         result = play_rps(self.choice)
         if result["result"] == "win":
-            firebase.add_tickets(self.guild_id, self.user_id, 1)
+            await firebase.add_tickets(self.guild_id, self.user_id, 1)
             text = f"{ICON_CHECK} Bạn thắng! Bot chọn **{result['bot_choice']}**. Bạn nhận lại +1 {ICON_TICKET}!"
         elif result["result"] == "draw":
-            firebase.add_tickets(self.guild_id, self.user_id, GAME_TICKET_COST)
+            await firebase.add_tickets(self.guild_id, self.user_id, GAME_TICKET_COST)
             text = f"{ICON_WARNING} Hòa! Bot cũng chọn **{result['bot_choice']}**. Vé được hoàn lại."
         else:
             text = f"{ICON_CROSS} Bạn thua! Bot chọn **{result['bot_choice']}**."
@@ -605,15 +707,28 @@ class DiceButton(discord.ui.Button):
         self.guild_id, self.user_id, self.guess = guild_id, user_id, guess
 
     async def callback(self, interaction: discord.Interaction):
-        if not _spend_ticket_or_none(self.guild_id, self.user_id):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        try:
+            spent = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.response.edit_message(
+                content=f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+                view=None,
+            )
+            return
+
+        if not spent:
             await interaction.response.edit_message(
                 content=f"{ICON_CROSS} Bạn không đủ vé game! Cần {GAME_TICKET_COST} {ICON_TICKET}.",
                 view=None,
             )
             return
+
         result = play_dice(self.guess)
         if result["win"]:
-            firebase.add_tickets(self.guild_id, self.user_id, 1)
+            await firebase.add_tickets(self.guild_id, self.user_id, 1)
             text = f"{ICON_CHECK} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán đúng, nhận lại +1 {ICON_TICKET}!"
         else:
             text = f"{ICON_CROSS} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán sai."

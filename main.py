@@ -27,6 +27,16 @@ TIKTOK_USERNAME = os.getenv("TIKTOK_USERNAME", "tahnuyo_0")
 TIKTOK_CHECK_INTERVAL_SECONDS = 5 * 60 * 60  # cứ 5 tiếng check 1 lần
 BOT_NAME_SUFFIX = " Bot"  # tên bot = "<Nickname TikTok> Bot", vd "Delta Mick Bot"
 
+# Kênh thông báo lên level khi XP đến từ voice chat (không nhắn tin nên không
+# có "kênh vừa nhắn" để dùng). Để trống (None) thì bot sẽ tự đoán 1 kênh text
+# hợp lý (kênh có chữ "level", rồi "general"/"chat", rồi kênh đầu tiên).
+VOICE_LEVEL_UP_CHANNEL_ID = os.getenv("VOICE_LEVEL_UP_CHANNEL_ID")
+VOICE_LEVEL_UP_CHANNEL_ID = int(VOICE_LEVEL_UP_CHANNEL_ID) if VOICE_LEVEL_UP_CHANNEL_ID else None
+
+# Dọn dẹp cooldown message-XP định kỳ để dict không phình to mãi theo thời gian
+# (nếu không dọn, mỗi user từng nhắn 1 lần sẽ ở lại trong bộ nhớ vĩnh viễn).
+COOLDOWN_CLEANUP_INTERVAL_SECONDS = 30 * 60
+
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("bot")
 
@@ -47,24 +57,60 @@ async def on_message(message: discord.Message):
 
     # Đếm tin nhắn trong kênh daily để biết khi nào cần gửi lại container.
     if message.channel.id == level.DAILY_CHANNEL_ID:
-        firebase.increment_daily_message_count()
+        try:
+            await firebase.increment_daily_message_count()
+        except firebase.FirebaseUnavailable:
+            log.warning("Không đếm được tin nhắn kênh daily (Firebase lỗi).")
 
+    # Tính XP ở BẤT KỲ kênh nào có tin nhắn (không giới hạn kênh cụ thể).
     key = (message.guild.id, message.author.id)
     now = time.time()
     if now - _message_cooldowns.get(key, 0) < level.MESSAGE_XP_COOLDOWN:
         return
     _message_cooldowns[key] = now
 
-    result = level.add_xp(message.guild.id, message.author.id, level.random_message_xp())
+    try:
+        result = await level.add_xp(message.guild.id, message.author.id, level.random_message_xp())
+    except firebase.FirebaseUnavailable:
+        log.warning(f"Không cộng được XP cho {message.author.id} (Firebase lỗi).")
+        return
+
     if result["leveled_up"]:
+        # Gửi thông báo lên level vào đúng kênh mà member vừa nhắn tin.
         try:
             await message.channel.send(view=level.LevelUpView(message.author, result))
         except discord.HTTPException:
-            pass
+            log.warning(f"Không gửi được thông báo lên level trong #{message.channel} (HTTP lỗi).")
+
+
+@tasks.loop(seconds=COOLDOWN_CLEANUP_INTERVAL_SECONDS)
+async def cooldown_cleanup_task():
+    """Xoá khỏi bộ nhớ các cooldown đã hết hạn từ lâu, tránh dict phình to mãi."""
+    cutoff = time.time() - level.MESSAGE_XP_COOLDOWN
+    expired = [key for key, ts in _message_cooldowns.items() if ts < cutoff]
+    for key in expired:
+        _message_cooldowns.pop(key, None)
+    if expired:
+        log.info(f"Đã dọn {len(expired)} cooldown XP hết hạn khỏi bộ nhớ.")
+
+
+@cooldown_cleanup_task.before_loop
+async def before_cooldown_cleanup_task():
+    await bot.wait_until_ready()
 
 
 # ==================== XP KHI VOICE CHAT ====================
 def _find_notify_channel(guild: discord.Guild):
+    """
+    Chọn kênh text để thông báo lên level do voice XP (không có "kênh vừa
+    nhắn" trong trường hợp này). Ưu tiên VOICE_LEVEL_UP_CHANNEL_ID nếu được
+    cấu hình, sau đó mới đoán theo tên kênh.
+    """
+    if VOICE_LEVEL_UP_CHANNEL_ID:
+        channel = guild.get_channel(VOICE_LEVEL_UP_CHANNEL_ID)
+        if channel:
+            return channel
+
     for ch in guild.text_channels:
         if "level" in ch.name.lower():
             return ch
@@ -92,7 +138,12 @@ async def voice_xp_task():
                 if level.VOICE_IGNORE_IF_MUTED_DEAFENED and (vs.self_mute or vs.self_deaf):
                     continue
 
-                result = level.add_xp(guild.id, member.id, level.random_voice_xp())
+                try:
+                    result = await level.add_xp(guild.id, member.id, level.random_voice_xp())
+                except firebase.FirebaseUnavailable:
+                    log.warning(f"Không cộng được voice XP cho {member.id} (Firebase lỗi).")
+                    continue
+
                 if result["leveled_up"]:
                     target = _find_notify_channel(guild)
                     if target:
@@ -122,7 +173,11 @@ async def sync_tiktok_name(force: bool = False) -> dict:
     avatar_url = profile["avatar_url"]
     bot_name = (nickname + BOT_NAME_SUFFIX)[:32]
 
-    state = firebase.get_tiktok_sync_state()
+    try:
+        state = await firebase.get_tiktok_sync_state()
+    except firebase.FirebaseUnavailable:
+        return {"ok": False, "reason": "Không đọc được trạng thái đồng bộ TikTok (Firebase lỗi)."}
+
     if not force and state.get("nickname") == nickname and state.get("avatar_url") == avatar_url:
         return {"ok": True, "changed": False}
 
@@ -138,11 +193,14 @@ async def sync_tiktok_name(force: bool = False) -> dict:
     except discord.HTTPException as e:
         errors.append(f"đổi tên/avatar bot: {e}")
 
-    firebase.save_tiktok_sync_state({
-        "nickname": nickname,
-        "avatar_url": avatar_url,
-        "updated_at": time.time(),
-    })
+    try:
+        await firebase.save_tiktok_sync_state({
+            "nickname": nickname,
+            "avatar_url": avatar_url,
+            "updated_at": time.time(),
+        })
+    except firebase.FirebaseUnavailable:
+        errors.append("lưu trạng thái đồng bộ vào Firebase thất bại")
 
     return {"ok": True, "changed": True, "bot_name": bot_name, "errors": errors}
 
@@ -163,7 +221,7 @@ async def before_tiktok_sync_task():
     await bot.wait_until_ready()
 
 
-@bot.tree.command(name="dong-bo-tiktok", description="Đồng bộ ngay tên & avatar bot theo TikTok")
+@bot.tree.command(name="đồng-bộ-tiktok", description="Đồng bộ ngay tên & avatar bot theo TikTok")
 async def sync_tiktok_command(interaction: discord.Interaction):
     if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message(
@@ -190,15 +248,44 @@ async def sync_tiktok_command(interaction: discord.Interaction):
 
 # ==================== LỆNH /level ====================
 @bot.tree.command(name="level", description="Xem Level, XP, Aura, Deltan và vé game của bạn (hoặc người khác)")
-@discord.app_commands.describe(thanh_vien="Xem thông tin của thành viên khác (bỏ trống để xem của chính bạn)")
-async def level_command(interaction: discord.Interaction, thanh_vien: discord.Member | None = None):
+@discord.app_commands.describe(thành_viên="Xem thông tin của thành viên khác (bỏ trống để xem của chính bạn)")
+async def level_command(interaction: discord.Interaction, thành_viên: discord.Member | None = None):
     if not interaction.guild:
         await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
         return
 
-    member = thanh_vien or interaction.user
-    user_data = firebase.get_user(interaction.guild.id, member.id)
-    await interaction.response.send_message(view=level.LevelView(member, user_data))
+    member = thành_viên or interaction.user
+    await interaction.response.defer(thinking=True)
+    try:
+        user_data = await firebase.get_user(interaction.guild.id, member.id)
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
+    await interaction.followup.send(view=level.LevelView(member, user_data))
+
+
+# ==================== LỆNH /bảng-xếp-hạng ====================
+@bot.tree.command(name="bảng-xếp-hạng", description="Xem bảng xếp hạng top 10 theo Deltan, Level hoặc Aura")
+@discord.app_commands.describe(loại="Xếp hạng theo tiêu chí nào")
+@discord.app_commands.choices(loại=[
+    discord.app_commands.Choice(name="Deltan", value="deltan"),
+    discord.app_commands.Choice(name="Level", value="level"),
+    discord.app_commands.Choice(name="Aura", value="aura"),
+])
+async def leaderboard_command(interaction: discord.Interaction, loại: discord.app_commands.Choice[str]):
+    if not interaction.guild:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    try:
+        ranked = await firebase.get_leaderboard(interaction.guild.id, loại.value, level.LEADERBOARD_SIZE)
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
+    await interaction.followup.send(view=level.LeaderboardView(interaction.guild, loại.value, ranked))
 
 
 # ==================== LỆNH /game ====================
@@ -208,15 +295,64 @@ async def game_command(interaction: discord.Interaction):
         await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
         return
 
-    user_data = firebase.get_user(interaction.guild.id, interaction.user.id)
+    try:
+        user_data = await firebase.get_user(interaction.guild.id, interaction.user.id)
+    except firebase.FirebaseUnavailable:
+        await interaction.response.send_message("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!", ephemeral=True)
+        return
+
     tickets = user_data.get("tickets", 0)
-    await interaction.response.send_message(view=level.GameSelectView(tickets), ephemeral=True)
+    await interaction.response.send_message(
+        view=level.GameSelectView(interaction.user.id, tickets), ephemeral=True
+    )
+
+
+# ==================== LỆNH /thú-tội ====================
+@bot.tree.command(name="thú-tội", description="Gửi một lời thú tội ẩn danh — không ai biết bạn là người gửi")
+@discord.app_commands.describe(nội_dung="Nội dung lời thú tội của bạn")
+async def confession_command(interaction: discord.Interaction, nội_dung: str):
+    channel = bot.get_channel(level.CONFESSION_CHANNEL_ID)
+    if channel is None:
+        await interaction.response.send_message(
+            "❌ Không tìm thấy kênh thú tội, báo admin kiểm tra lại cấu hình nhé.", ephemeral=True
+        )
+        return
+
+    if not nội_dung.strip():
+        await interaction.response.send_message("❌ Nội dung thú tội không được để trống.", ephemeral=True)
+        return
+
+    # Phản hồi ephemeral ngay lập tức để không ai (kể cả log tương tác) có thể
+    # suy ra danh tính người gửi từ độ trễ phản hồi công khai.
+    await interaction.response.send_message(
+        "✅ Thú tội của bạn đã được gửi ẩn danh!", ephemeral=True
+    )
+
+    try:
+        confession_id = await firebase.generate_confession_id()
+        confession_number = await firebase.next_confession_number()
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send(
+            "⚠️ Có lỗi khi lưu thú tội, vui lòng thử lại sau.", ephemeral=True
+        )
+        return
+
+    try:
+        await channel.send(
+            view=level.ConfessionView(nội_dung, confession_number, confession_id, time.time()),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.HTTPException:
+        log.exception("Không gửi được thú tội ẩn danh vào kênh.")
+        await interaction.followup.send(
+            "⚠️ Có lỗi khi đăng thú tội lên kênh, vui lòng thử lại sau.", ephemeral=True
+        )
 
 
 # ==================== HỆ THỐNG DAILY ====================
 async def _send_new_daily_container(channel: discord.TextChannel):
     msg = await channel.send(view=level.DailyClaimView())
-    firebase.save_daily_state({
+    await firebase.save_daily_state({
         "message_id": msg.id,
         "date": level.today_str(),
         "message_count": 0,
@@ -237,7 +373,12 @@ async def daily_container_task():
     if channel is None:
         return
 
-    state = firebase.get_daily_state()
+    try:
+        state = await firebase.get_daily_state()
+    except firebase.FirebaseUnavailable:
+        log.warning("Không đọc được trạng thái daily (Firebase lỗi), bỏ qua lượt kiểm tra này.")
+        return
+
     today = level.today_str()
 
     if state.get("date") != today or "message_id" not in state:
@@ -278,13 +419,23 @@ async def citizen(interaction: discord.Interaction):
     guild = interaction.guild
     member = interaction.user
 
-    user_data = firebase.get_user(guild.id, member.id)
-    citizen_data = firebase.get_citizen(guild.id, member.id)
+    try:
+        user_data = await firebase.get_user(guild.id, member.id)
+        citizen_data = await firebase.get_citizen(guild.id, member.id)
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
     is_new = not citizen_data
 
     if is_new:
-        firebase.create_citizen(guild.id, member.id, level.generate_citizen_id())
-        citizen_data = firebase.get_citizen(guild.id, member.id)
+        try:
+            await firebase.create_citizen(guild.id, member.id, level.generate_citizen_id())
+            citizen_data = await firebase.get_citizen(guild.id, member.id)
+        except firebase.FirebaseUnavailable:
+            await interaction.followup.send("❌ Không tạo được hồ sơ công dân lúc này, thử lại sau nhé!")
+            return
+
         role = await ensure_citizen_role(guild)
         if role and role not in member.roles:
             try:
@@ -293,6 +444,20 @@ async def citizen(interaction: discord.Interaction):
                 pass
 
     await interaction.followup.send(view=level.CitizenView(member, user_data, citizen_data, is_new))
+
+
+# ==================== XỬ LÝ LỖI CHUNG CHO SLASH COMMAND ====================
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    log.exception(f"Lỗi khi xử lý lệnh /{interaction.command.name if interaction.command else '?'}: {error}")
+    message = "❌ Có lỗi xảy ra khi thực hiện lệnh, vui lòng thử lại sau."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        pass
 
 
 # ==================== SỰ KIỆN KHỞI ĐỘNG ====================
@@ -320,6 +485,9 @@ async def on_ready():
 
     if not tiktok_sync_task.is_running():
         tiktok_sync_task.start()
+
+    if not cooldown_cleanup_task.is_running():
+        cooldown_cleanup_task.start()
 
     await bot.change_presence(
         activity=discord.Activity(type=discord.ActivityType.watching, name="Tích Tốc")
