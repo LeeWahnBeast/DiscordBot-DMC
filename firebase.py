@@ -251,6 +251,37 @@ async def add_tickets(guild_id: int, user_id: int, amount: int) -> int:
     return await _run(_add_tickets_sync, guild_id, user_id, amount)
 
 
+# ==================== THƯỞNG/PHẠT DELTAN & AURA (mini-game mới) ====================
+def _add_deltan_sync(guild_id: int, user_id: int, amount: int) -> int:
+    ref = _user_ref(guild_id, user_id).child("deltan")
+
+    def txn(current):
+        return max(0, (current or 0) + amount)
+
+    result = ref.transaction(txn)
+    return result if isinstance(result, int) else 0
+
+
+async def add_deltan(guild_id: int, user_id: int, amount: int) -> int:
+    """Cộng (hoặc trừ nếu amount âm) Deltan, không cho xuống dưới 0."""
+    return await _run(_add_deltan_sync, guild_id, user_id, amount)
+
+
+def _add_aura_sync(guild_id: int, user_id: int, amount: float) -> float:
+    ref = _user_ref(guild_id, user_id).child("aura")
+
+    def txn(current):
+        return round(max(0.0, (current or 0.0) + amount), 2)
+
+    result = ref.transaction(txn)
+    return result if isinstance(result, (int, float)) else 0.0
+
+
+async def add_aura(guild_id: int, user_id: int, amount: float) -> float:
+    """Cộng (hoặc trừ nếu amount âm) Aura, không cho xuống dưới 0."""
+    return await _run(_add_aura_sync, guild_id, user_id, amount)
+
+
 def _regen_tickets(data: dict, now: float, max_tickets: int, regen_seconds: int, today: str) -> dict:
     """
     Tính lại số vé hiện tại của user theo cơ chế "bình vé":

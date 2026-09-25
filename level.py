@@ -188,6 +188,34 @@ async def daily_status_icon(guild_id: int, user_id: int) -> str:
     return ICON_CROSS
 
 
+DAILY_STREAK_DISPLAY_MAX = 7  # số icon tối đa hiển thị trên 1 dòng, streak dài hơn thì rút gọn
+
+
+def format_daily_streak(user_data: dict) -> str:
+    """
+    Chuỗi icon biểu diễn daily streak, ví dụ ✅✅✅✅✅⚠️:
+      - Mỗi ✅ là 1 ngày đã điểm danh liên tục trong streak hiện tại.
+      - Icon cuối cùng là trạng thái HÔM NAY: ✅ nếu đã điểm danh, ⚠️ nếu
+        daily đang mở nhưng chưa điểm danh (sắp mất streak nếu không bấm kịp),
+        ❌ nếu đã lỡ (daily đã đóng, streak sẽ reset ở lần điểm danh tới).
+      - Streak dài hơn khung hiển thị thì chỉ hiện icon + số streak thật.
+    """
+    streak = user_data.get("daily_streak", 0)
+    claimed_today = user_data.get("last_daily_date") == today_str()
+
+    if claimed_today:
+        shown = min(streak, DAILY_STREAK_DISPLAY_MAX)
+        icons = ICON_CHECK * max(shown, 1)
+    else:
+        status = ICON_WARNING if is_daily_open() else ICON_CROSS
+        shown = min(streak, DAILY_STREAK_DISPLAY_MAX - 1)
+        icons = (ICON_CHECK * shown) + status
+
+    if streak > DAILY_STREAK_DISPLAY_MAX:
+        return f"🔥 **{streak}** ngày · {icons}"
+    return icons
+
+
 class DailyClaimView(discord.ui.LayoutView):
     """Container Components V2 hiển thị nút nhận daily."""
 
@@ -258,7 +286,85 @@ class DailyClaimButton(discord.ui.Button):
 
 
 # ==================== VÉ GAME / MINI GAME ====================
-GAME_CHOICES = ["đoán số", "kéo búa bao", "xúc xắc"]
+GAME_CHOICES = [
+    "đoán số", "kéo búa bao", "xúc xắc",
+    "tài xỉu", "đoán chất bài", "vòng quay may mắn", "mở rương kho báu",
+]
+
+# Deltan thưởng thêm cho 3 game cũ khi thắng (ngoài phần thưởng vé cũ), tính
+# theo cùng công thức độ khó dùng cho 4 game mới bên dưới (xác suất thắng
+# càng thấp thì thưởng càng cao).
+GUESS_NUMBER_DELTAN_REWARD = 8   # thắng 1/10 ~ 10%
+RPS_DELTAN_REWARD = 4            # thắng 1/3 ~ 33%
+DICE_DELTAN_REWARD = 1           # thắng 1/2 ~ 50%
+
+# ---- 4 game mới: thưởng/phạt bằng Deltan + Aura thay vì vé ----
+# Thưởng tăng dần theo độ khó (xác suất thắng càng thấp thì thưởng càng cao):
+#   Deltan: 1 -> 8, Aura: 0.5 -> 3.0. Thua thì bị trừ đúng số Aura lẽ ra được
+# thưởng nếu thắng (game càng khó thì thua cũng mất càng nhiều Aura).
+GAME_DEFS = {
+    "taixiu": {
+        "title": "🎲 Tài Xỉu",
+        "desc": "Xúc xắc 3 viên: tổng 3-10 là **Xỉu**, 11-18 là **Tài**. Đoán đúng ăn thưởng!",
+        "win_probability": 0.5,
+        "deltan_reward": 1,
+        "aura_reward": 0.5,
+        "options": [("tài", "Tài", "🔴"), ("xỉu", "Xỉu", "⚪")],
+    },
+    "bai": {
+        "title": "🃏 Đoán Chất Bài",
+        "desc": "Rút 1 lá bài ngẫu nhiên, đoán đúng chất (♠ ♥ ♦ ♣) để ăn thưởng!",
+        "win_probability": 0.25,
+        "deltan_reward": 5,
+        "aura_reward": 2.0,
+        "options": [("♠", "Bích", "♠️"), ("♥", "Cơ", "♥️"), ("♦", "Rô", "♦️"), ("♣", "Chuồn", "♣️")],
+    },
+    "vongquay": {
+        "title": "🎡 Vòng Quay May Mắn",
+        "desc": "Chọn 1 trong 6 ô số, vòng quay dừng đúng ô của bạn thì ăn thưởng!",
+        "win_probability": 1 / 6,
+        "deltan_reward": 7,
+        "aura_reward": 2.5,
+        "options": [(str(n), str(n), "🔹") for n in range(1, 7)],
+    },
+    "ruong": {
+        "title": "🗝️ Mở Rương Kho Báu",
+        "desc": "Chọn 1 trong 12 rương, mở đúng rương có kho báu thì ăn thưởng cực lớn!",
+        "win_probability": 1 / 12,
+        "deltan_reward": 8,
+        "aura_reward": 3.0,
+        "options": [(str(n), str(n), "📦") for n in range(1, 13)],
+    },
+}
+
+_CARD_SUITS = [("♠", "Bích"), ("♥", "Cơ"), ("♦", "Rô"), ("♣", "Chuồn")]
+_CARD_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+
+def play_new_game(game_key: str, guess_value: str) -> dict:
+    """Xử lý 1 lượt chơi cho 4 game mới (taixiu/bai/vongquay/ruong)."""
+    if game_key == "taixiu":
+        rolls = [random.randint(1, 6) for _ in range(3)]
+        total = sum(rolls)
+        actual = "tài" if total >= 11 else "xỉu"
+        return {
+            "win": guess_value == actual,
+            "actual_label": f"**{actual.capitalize()}** ({'+'.join(map(str, rolls))} = {total})",
+        }
+    if game_key == "bai":
+        actual_symbol, actual_name = random.choice(_CARD_SUITS)
+        rank = random.choice(_CARD_RANKS)
+        return {
+            "win": guess_value == actual_symbol,
+            "actual_label": f"**{rank}{actual_symbol}** ({actual_name})",
+        }
+    if game_key == "vongquay":
+        actual = str(random.randint(1, 6))
+        return {"win": guess_value == actual, "actual_label": f"**{actual}**"}
+    if game_key == "ruong":
+        actual = str(random.randint(1, 12))
+        return {"win": guess_value == actual, "actual_label": f"Rương số **{actual}**"}
+    raise ValueError(f"Unknown game_key: {game_key}")
 
 
 def play_guess_number(guess: int) -> dict:
@@ -423,6 +529,7 @@ class CitizenView(discord.ui.LayoutView):
             f"{ICON_XP} **Tổng XP:** {xp:,}",
             f"{ICON_AURA} **Aura:** {user_data.get('aura', 0.0)}",
             f"{ICON_DELTAN} **Deltan:** {user_data.get('deltan', 0):,}",
+            f"🔥 **Daily Streak:** {format_daily_streak(user_data)}",
         ]
 
         roles_lines = [
@@ -463,6 +570,7 @@ class LevelView(discord.ui.LayoutView):
             f"{ICON_AURA} **Aura:** {user_data.get('aura', 0.0)}",
             f"{ICON_DELTAN} **Deltan:** {user_data.get('deltan', 0):,}",
             f"{ICON_TICKET} **Vé game:** {user_data.get('tickets', 0)}/{TICKETS_MAX}",
+            f"🔥 **Daily Streak:** {format_daily_streak(user_data)}",
         ]
 
         container = discord.ui.Container(
@@ -538,6 +646,8 @@ class GameSelectView(discord.ui.LayoutView):
         lines = [
             "## 🎮 MINI GAME",
             f"{ICON_TICKET} Vé của bạn: **{tickets}**  •  Mỗi lượt chơi tốn **{GAME_TICKET_COST}** {ICON_TICKET}",
+            "-# 3 game đầu thắng nhận lại vé + Deltan. 4 game dưới thắng nhận Deltan + Aura, "
+            "**thua sẽ bị trừ Aura** — game càng khó thưởng/phạt càng cao.",
             "-# Chọn một trò chơi bên dưới:",
         ]
         container = discord.ui.Container(
@@ -546,6 +656,12 @@ class GameSelectView(discord.ui.LayoutView):
                 GameChoiceButton(owner_id, "guess", "Đoán Số", "🔢"),
                 GameChoiceButton(owner_id, "rps", "Kéo Búa Bao", "✊"),
                 GameChoiceButton(owner_id, "dice", "Xúc Xắc", "🎲"),
+            ),
+            discord.ui.ActionRow(
+                GameChoiceButton(owner_id, "taixiu", "Tài Xỉu", "🎲"),
+                GameChoiceButton(owner_id, "bai", "Đoán Chất Bài", "🃏"),
+                GameChoiceButton(owner_id, "vongquay", "Vòng Quay May Mắn", "🎡"),
+                GameChoiceButton(owner_id, "ruong", "Mở Rương Kho Báu", "🗝️"),
             ),
             accent_color=discord.Colour.blurple(),
         )
@@ -588,6 +704,11 @@ class GameChoiceButton(discord.ui.Button):
         elif self.game_key == "dice":
             await interaction.response.send_message(
                 view=DiceView(interaction.guild.id, interaction.user.id),
+                ephemeral=True,
+            )
+        elif self.game_key in GAME_DEFS:
+            await interaction.response.send_message(
+                view=NewGameView(interaction.guild.id, interaction.user.id, self.game_key),
                 ephemeral=True,
             )
 
@@ -671,7 +792,11 @@ class GuessNumberButton(discord.ui.Button):
         result = play_guess_number(self.number)
         if result["win"]:
             await firebase.add_tickets(self.guild_id, self.user_id, 1)
-            text = f"{ICON_CHECK} Chính xác! Số bí mật là **{result['secret']}**. Bạn nhận lại +1 {ICON_TICKET}!"
+            await firebase.add_deltan(self.guild_id, self.user_id, GUESS_NUMBER_DELTAN_REWARD)
+            text = (
+                f"{ICON_CHECK} Chính xác! Số bí mật là **{result['secret']}**. "
+                f"Bạn nhận lại +1 {ICON_TICKET} và +{GUESS_NUMBER_DELTAN_REWARD} {ICON_DELTAN}!"
+            )
         else:
             text = f"{ICON_CROSS} Sai rồi! Số bí mật là **{result['secret']}**."
         await interaction.edit_original_response(view=GameResultView(text))
@@ -725,7 +850,11 @@ class RPSButton(discord.ui.Button):
         result = play_rps(self.choice)
         if result["result"] == "win":
             await firebase.add_tickets(self.guild_id, self.user_id, 1)
-            text = f"{ICON_CHECK} Bạn thắng! Bot chọn **{result['bot_choice']}**. Bạn nhận lại +1 {ICON_TICKET}!"
+            await firebase.add_deltan(self.guild_id, self.user_id, RPS_DELTAN_REWARD)
+            text = (
+                f"{ICON_CHECK} Bạn thắng! Bot chọn **{result['bot_choice']}**. "
+                f"Bạn nhận lại +1 {ICON_TICKET} và +{RPS_DELTAN_REWARD} {ICON_DELTAN}!"
+            )
         elif result["result"] == "draw":
             await firebase.add_tickets(self.guild_id, self.user_id, GAME_TICKET_COST)
             text = f"{ICON_WARNING} Hòa! Bot cũng chọn **{result['bot_choice']}**. Vé được hoàn lại."
@@ -781,7 +910,90 @@ class DiceButton(discord.ui.Button):
         result = play_dice(self.guess)
         if result["win"]:
             await firebase.add_tickets(self.guild_id, self.user_id, 1)
-            text = f"{ICON_CHECK} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán đúng, nhận lại +1 {ICON_TICKET}!"
+            await firebase.add_deltan(self.guild_id, self.user_id, DICE_DELTAN_REWARD)
+            text = (
+                f"{ICON_CHECK} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán đúng, "
+                f"nhận lại +1 {ICON_TICKET} và +{DICE_DELTAN_REWARD} {ICON_DELTAN}!"
+            )
         else:
             text = f"{ICON_CROSS} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán sai."
+        await interaction.edit_original_response(view=GameResultView(text))
+
+
+# ==================== 4 GAME MỚI: thưởng/phạt bằng Deltan + Aura ====================
+class NewGameView(discord.ui.LayoutView):
+    """View dùng chung cho 4 game mới (taixiu/bai/vongquay/ruong), cấu hình lấy từ GAME_DEFS."""
+
+    def __init__(self, guild_id: int, user_id: int, game_key: str):
+        super().__init__(timeout=60)
+        cfg = GAME_DEFS[game_key]
+        lines = [
+            f"### {cfg['title']}",
+            cfg["desc"],
+            f"Tốn **{GAME_TICKET_COST}** {ICON_TICKET} mỗi lượt. "
+            f"Thắng nhận **+{cfg['deltan_reward']} {ICON_DELTAN}** và **+{cfg['aura_reward']} {ICON_AURA}** "
+            f"— thua bị trừ **-{cfg['aura_reward']} {ICON_AURA}**.",
+        ]
+        rows = [
+            discord.ui.ActionRow(
+                *[NewGameButton(guild_id, user_id, game_key, value, label, emoji) for value, label, emoji in chunk]
+            )
+            for chunk in (cfg["options"][i:i + 5] for i in range(0, len(cfg["options"]), 5))
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            *rows,
+            accent_color=discord.Colour.gold(),
+        )
+        self.add_item(container)
+
+
+class NewGameButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int, game_key: str, value: str, label: str, emoji: str):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, emoji=emoji)
+        self.guild_id, self.user_id, self.game_key, self.value = guild_id, user_id, game_key, value
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        # Ack ngay (deferred update) trước khi gọi Firebase, tránh timeout 3s.
+        await interaction.response.defer()
+
+        try:
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.edit_original_response(
+                view=GameResultView(_format_no_ticket_message(spend)),
+            )
+            return
+
+        cfg = GAME_DEFS[self.game_key]
+        result = play_new_game(self.game_key, self.value)
+
+        try:
+            if result["win"]:
+                await firebase.add_deltan(self.guild_id, self.user_id, cfg["deltan_reward"])
+                await firebase.add_aura(self.guild_id, self.user_id, cfg["aura_reward"])
+                text = (
+                    f"{ICON_CHECK} Chính xác! Kết quả: {result['actual_label']}.\n"
+                    f"Bạn nhận **+{cfg['deltan_reward']} {ICON_DELTAN}** và **+{cfg['aura_reward']} {ICON_AURA}**!"
+                )
+            else:
+                await firebase.add_aura(self.guild_id, self.user_id, -cfg["aura_reward"])
+                text = (
+                    f"{ICON_CROSS} Sai rồi! Kết quả: {result['actual_label']}.\n"
+                    f"Bạn bị trừ **-{cfg['aura_reward']} {ICON_AURA}**."
+                )
+        except firebase.FirebaseUnavailable:
+            # Vé đã bị trừ nhưng không cộng/trừ được Deltan/Aura — báo lỗi rõ ràng
+            # thay vì im lặng mất phần thưởng của người chơi.
+            text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
+
         await interaction.edit_original_response(view=GameResultView(text))
