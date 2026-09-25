@@ -11,15 +11,20 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+import aiohttp
 
 import firebase
 import level
+import tiktok
 from keepalive import keep_alive
 
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID") or None
+
+TIKTOK_USERNAME = os.getenv("TIKTOK_USERNAME", "tahnuyo_0")
+TIKTOK_CHECK_INTERVAL_SECONDS = 5 * 60 * 60  # cứ 5 tiếng check 1 lần
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 log = logging.getLogger("bot")
@@ -97,6 +102,93 @@ async def before_voice_xp_task():
     await bot.wait_until_ready()
 
 
+# ==================== ĐỒNG BỘ THEO TIKTOK ====================
+async def sync_tiktok(force: bool = False) -> dict:
+    """
+    Kiểm tra tên/avatar TikTok của TIKTOK_USERNAME. Nếu có thay đổi so với
+    lần trước (hoặc force=True), đổi tên + avatar của bot và đổi tên + icon
+    của (các) server bot đang ở theo TikTok.
+    """
+    profile = await tiktok.fetch_tiktok_profile(TIKTOK_USERNAME)
+    if not profile:
+        return {"ok": False, "reason": "Không lấy được dữ liệu từ TikTok (mạng lỗi hoặc TikTok chặn)."}
+
+    nickname = profile["nickname"]
+    avatar_url = profile["avatar_url"]
+
+    state = firebase.get_tiktok_sync_state()
+    if not force and state.get("nickname") == nickname and state.get("avatar_url") == avatar_url:
+        return {"ok": True, "changed": False}
+
+    async with aiohttp.ClientSession() as session:
+        avatar_bytes = await tiktok.download_bytes(session, avatar_url)
+
+    if not avatar_bytes:
+        return {"ok": False, "reason": "Không tải được ảnh đại diện TikTok."}
+
+    errors: list[str] = []
+
+    try:
+        await bot.user.edit(username=nickname[:32], avatar=avatar_bytes)
+    except discord.HTTPException as e:
+        errors.append(f"đổi tên/avatar bot: {e}")
+
+    for guild in bot.guilds:
+        try:
+            await guild.edit(name=nickname[:100], icon=avatar_bytes, reason="Đồng bộ theo TikTok")
+        except discord.HTTPException as e:
+            errors.append(f"đổi server {guild.id}: {e}")
+
+    firebase.save_tiktok_sync_state({
+        "nickname": nickname,
+        "avatar_url": avatar_url,
+        "updated_at": time.time(),
+    })
+
+    return {"ok": True, "changed": True, "nickname": nickname, "errors": errors}
+
+
+@tasks.loop(seconds=TIKTOK_CHECK_INTERVAL_SECONDS)
+async def tiktok_sync_task():
+    result = await sync_tiktok()
+    if not result.get("ok"):
+        log.warning(f"Đồng bộ TikTok thất bại: {result.get('reason')}")
+    elif result.get("changed"):
+        log.info(f"Đã đồng bộ theo TikTok @{TIKTOK_USERNAME}: {result.get('nickname')}")
+        if result.get("errors"):
+            log.warning(f"Có lỗi khi đồng bộ TikTok: {result['errors']}")
+
+
+@tiktok_sync_task.before_loop
+async def before_tiktok_sync_task():
+    await bot.wait_until_ready()
+
+
+@bot.tree.command(name="dong-bo-tiktok", description="Đồng bộ ngay tên & avatar server/bot theo TikTok")
+async def sync_tiktok_command(interaction: discord.Interaction):
+    if not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "Bạn cần quyền Manage Server để dùng lệnh này.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    result = await sync_tiktok(force=True)
+
+    if not result["ok"]:
+        await interaction.followup.send(f"❌ {result['reason']}")
+        return
+
+    if result["changed"]:
+        msg = f"✅ Đã cập nhật theo TikTok @{TIKTOK_USERNAME}: **{result['nickname']}**"
+        if result.get("errors"):
+            msg += "\n⚠️ " + "; ".join(result["errors"])
+    else:
+        msg = f"ℹ️ TikTok @{TIKTOK_USERNAME} chưa có gì thay đổi."
+
+    await interaction.followup.send(msg)
+
+
 # ==================== LỆNH /công-dân ====================
 async def ensure_citizen_role(guild: discord.Guild):
     role = discord.utils.get(guild.roles, name=level.CITIZEN_ROLE_NAME)
@@ -159,8 +251,11 @@ async def on_ready():
     if not voice_xp_task.is_running():
         voice_xp_task.start()
 
+    if not tiktok_sync_task.is_running():
+        tiktok_sync_task.start()
+
     await bot.change_presence(
-        activity=discord.Activity(type=discord.ActivityType.watching, name="XP & Level | /công-dân")
+        activity=discord.Activity(type=discord.ActivityType.watching, name="Tích Tốc")
     )
 
 

@@ -67,3 +67,18 @@ def create_citizen(guild_id: int, user_id: int, citizen_id: str):
             "created_at": time.time(),
             "citizen_id": citizen_id,
         })
+
+
+# ==================== ĐỒNG BỘ TIKTOK ====================
+def _tiktok_sync_ref():
+    return db.reference("/tiktok_sync")
+
+
+def get_tiktok_sync_state() -> dict:
+    with _lock:
+        return _tiktok_sync_ref().get() or {}
+
+
+def save_tiktok_sync_state(data: dict):
+    with _lock:
+        _tiktok_sync_ref().set(data)
