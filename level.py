@@ -27,6 +27,8 @@ ICON_AURA = "<:aura:1553010328424546364>"
 ICON_DELTAN = "<:deltan:1553010324758593649>"
 ICON_ADMIN = "<:admin:1553016118430408764>"
 ICON_MOD = "<:mod:1553016085140349069>"
+ICON_CROWN = "<:vuongmien:1553254452083822692>"
+ICON_STREAK = "<:streak:1553254951709581373>"
 
 ICON_CHECK = "<:dautich:1553019524335271996>"
 ICON_CROSS = "<:daucheo:1553019526772170762>"
@@ -188,31 +190,38 @@ async def daily_status_icon(guild_id: int, user_id: int) -> str:
     return ICON_CROSS
 
 
-DAILY_STREAK_DISPLAY_MAX = 7  # số icon tối đa hiển thị trên 1 dòng, streak dài hơn thì rút gọn
+DAILY_STREAK_WEEK_SLOTS = 8  # "1 tuần" hiển thị = 8 ô icon cố định
+ICON_STREAK_EMPTY = "<:checkbox:1553253919549956256>"  # ô chưa tới / chưa điểm danh
 
 
 def format_daily_streak(user_data: dict) -> str:
     """
-    Chuỗi icon biểu diễn daily streak, ví dụ ✅✅✅✅✅⚠️:
+    Chuỗi 8 icon cố định biểu diễn daily streak trong "1 tuần", ví dụ:
+    ✅✅⚠️<empty><empty><empty><empty><empty>
       - Mỗi ✅ là 1 ngày đã điểm danh liên tục trong streak hiện tại.
-      - Icon cuối cùng là trạng thái HÔM NAY: ✅ nếu đã điểm danh, ⚠️ nếu
-        daily đang mở nhưng chưa điểm danh (sắp mất streak nếu không bấm kịp),
-        ❌ nếu đã lỡ (daily đã đóng, streak sẽ reset ở lần điểm danh tới).
-      - Streak dài hơn khung hiển thị thì chỉ hiện icon + số streak thật.
+      - Icon kế tiếp là trạng thái HÔM NAY: ✅ nếu đã điểm danh (gộp luôn vào
+        chuỗi check ở trên, không có icon riêng), ⚠️ nếu daily đang mở nhưng
+        chưa điểm danh (sắp mất streak nếu không bấm kịp), ❌ nếu đã lỡ.
+      - Các ô còn lại đến hết 8 ô là icon rỗng (chưa tới ngày đó).
+      - Streak dài hơn 8 thì thêm số streak thật ở đầu, ví dụ [icon lửa] 12 ngày · ...
     """
     streak = user_data.get("daily_streak", 0)
     claimed_today = user_data.get("last_daily_date") == today_str()
 
     if claimed_today:
-        shown = min(streak, DAILY_STREAK_DISPLAY_MAX)
-        icons = ICON_CHECK * max(shown, 1)
+        checks = min(streak, DAILY_STREAK_WEEK_SLOTS)
+        icons = ICON_CHECK * checks
+        remaining = DAILY_STREAK_WEEK_SLOTS - checks
     else:
+        checks = min(streak, DAILY_STREAK_WEEK_SLOTS - 1)
         status = ICON_WARNING if is_daily_open() else ICON_CROSS
-        shown = min(streak, DAILY_STREAK_DISPLAY_MAX - 1)
-        icons = (ICON_CHECK * shown) + status
+        icons = (ICON_CHECK * checks) + status
+        remaining = DAILY_STREAK_WEEK_SLOTS - checks - 1
 
-    if streak > DAILY_STREAK_DISPLAY_MAX:
-        return f"🔥 **{streak}** ngày · {icons}"
+    icons += ICON_STREAK_EMPTY * max(remaining, 0)
+
+    if streak > DAILY_STREAK_WEEK_SLOTS:
+        return f"{ICON_STREAK} **{streak}** ngày · {icons}"
     return icons
 
 
@@ -280,7 +289,7 @@ class DailyClaimButton(discord.ui.Button):
 
         await interaction.followup.send(
             f"{ICON_CHECK} Bạn nhận được **+{result['deltan_gained']} {ICON_DELTAN} Deltan**! "
-            f"🔥 Streak hiện tại: **{result['streak']}** ngày.",
+            f"{ICON_STREAK} Streak hiện tại: **{result['streak']}** ngày.",
             ephemeral=True,
         )
 
@@ -412,9 +421,9 @@ def _classify_roles(member: discord.Member) -> dict[str, list[discord.Role]]:
     """
     guild = member.guild
     groups = {
-        "👑 Owner": [],
-        "🛡️ Admin": [],
-        "🔧 Mod": [],
+        f"{ICON_CROWN} Owner": [],
+        f"{ICON_ADMIN} Admin": [],
+        f"{ICON_MOD} Mod": [],
         "🤖 Bot": [],
         "🏷️ Khác": [],
     }
@@ -425,23 +434,23 @@ def _classify_roles(member: discord.Member) -> dict[str, list[discord.Role]]:
     for role in roles:
         name_lower = role.name.lower()
         if is_owner and ("owner" in name_lower or "chủ" in name_lower):
-            groups["👑 Owner"].append(role)
+            groups[f"{ICON_CROWN} Owner"].append(role)
         elif role.permissions.administrator or "admin" in name_lower or "quản trị" in name_lower:
-            groups["🛡️ Admin"].append(role)
+            groups[f"{ICON_ADMIN} Admin"].append(role)
         elif (
             "mod" in name_lower
             or role.permissions.manage_messages
             or role.permissions.kick_members
             or "kiểm duyệt" in name_lower
         ):
-            groups["🔧 Mod"].append(role)
+            groups[f"{ICON_MOD} Mod"].append(role)
         elif "bot" in name_lower:
             groups["🤖 Bot"].append(role)
         else:
             groups["🏷️ Khác"].append(role)
 
-    if is_owner and not groups["👑 Owner"]:
-        groups["👑 Owner"].append(None)  # đánh dấu "là chủ server" dù không có role riêng
+    if is_owner and not groups[f"{ICON_CROWN} Owner"]:
+        groups[f"{ICON_CROWN} Owner"].append(None)  # đánh dấu "là chủ server" dù không có role riêng
 
     return groups
 
@@ -452,7 +461,7 @@ def _format_roles_block(member: discord.Member, max_per_group: int = 4) -> str:
     for label, roles in groups.items():
         if not roles:
             continue
-        if label == "👑 Owner" and roles == [None]:
+        if label == f"{ICON_CROWN} Owner" and roles == [None]:
             lines.append(f"{label}: *Chủ sở hữu server*")
             continue
 
@@ -529,7 +538,7 @@ class CitizenView(discord.ui.LayoutView):
             f"{ICON_XP} **Tổng XP:** {xp:,}",
             f"{ICON_AURA} **Aura:** {user_data.get('aura', 0.0)}",
             f"{ICON_DELTAN} **Deltan:** {user_data.get('deltan', 0):,}",
-            f"🔥 **Daily Streak:** {format_daily_streak(user_data)}",
+            f"{ICON_STREAK} **Daily Streak:** {format_daily_streak(user_data)}",
         ]
 
         roles_lines = [
@@ -570,7 +579,7 @@ class LevelView(discord.ui.LayoutView):
             f"{ICON_AURA} **Aura:** {user_data.get('aura', 0.0)}",
             f"{ICON_DELTAN} **Deltan:** {user_data.get('deltan', 0):,}",
             f"{ICON_TICKET} **Vé game:** {user_data.get('tickets', 0)}/{TICKETS_MAX}",
-            f"🔥 **Daily Streak:** {format_daily_streak(user_data)}",
+            f"{ICON_STREAK} **Daily Streak:** {format_daily_streak(user_data)}",
         ]
 
         container = discord.ui.Container(
