@@ -88,8 +88,8 @@ LEADERBOARD_FIELDS = {
     "level": {"label": "Level", "icon": ICON_LEVEL, "fmt": lambda v: f"{int(v):,}"},
     "aura": {"label": "Aura", "icon": ICON_AURA, "fmt": lambda v: f"{v:,.2f}"},
 }
-LEADERBOARD_SIZE = 10
-_RANK_MEDALS = {1: ICON_TOP1, 2: ICON_TOP2, 3: ICON_TOP3}
+LEADERBOARD_PAGE_SIZE = 10
+LEADERBOARD_MAX_FETCH = 50  # lấy tối đa 50 người để phân trang (5 trang x 10)
 
 
 # ==================== CÔNG THỨC XP / LEVEL (kiểu MEE6) ====================
@@ -311,7 +311,51 @@ class DailyClaimButton(discord.ui.Button):
 GAME_CHOICES = [
     "đoán số", "kéo búa bao", "xúc xắc", "wordle",
     "tài xỉu", "đoán chất bài", "vòng quay may mắn", "mở rương kho báu",
+    "tính nhẩm", "trí nhớ",
+    "đoán cờ", "đoán quốc gia", "đoán văn hoá", "đoán ứng dụng", "đoán truyền thống",
 ]
+
+# Mô tả ngắn + danh mục dùng cho menu /game — game nào cần may mắn, game nào cần kỹ năng.
+GAME_CATEGORIES = [
+    {"key": "luck", "emoji": "🍀", "title": "May Rủi", "desc": "Ăn thua theo xác suất, càng khó thưởng càng cao."},
+    {"key": "logic", "emoji": "🧠", "title": "Trí Tuệ - Logic", "desc": "Tính toán, ghi nhớ, đoán từ — không may rủi."},
+    {"key": "knowledge", "emoji": "📚", "title": "Trí Tuệ - Kiến Thức", "desc": "Đoán cờ, quốc gia, văn hoá, ứng dụng, truyền thống."},
+]
+
+GAME_LIST_INFO = [
+    {"key": "guess", "emoji": "🔢", "title": "Đoán Số", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Đoán 1 số bí mật từ 1-10. Đoán đúng nhận lại vé + Deltan."},
+    {"key": "rps", "emoji": "✊", "title": "Kéo Búa Bao", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Oẳn tù tì với bot, thắng nhận lại vé + Deltan, hòa hoàn vé."},
+    {"key": "dice", "emoji": "🎲", "title": "Xúc Xắc", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Đoán xúc xắc ra Cao (4-6) hay Thấp (1-3)."},
+    {"key": "taixiu", "emoji": "🎲", "title": "Tài Xỉu", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Đoán tổng 3 viên xúc xắc là Tài (11-18) hay Xỉu (3-10)."},
+    {"key": "bai", "emoji": "🃏", "title": "Đoán Chất Bài", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Đoán chất (♠♥♦♣) của lá bài được rút ngẫu nhiên."},
+    {"key": "vongquay", "emoji": "🎡", "title": "Vòng Quay May Mắn", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Chọn 1 trong 6 ô số, trúng ô của mình thì ăn thưởng."},
+    {"key": "ruong", "emoji": "🗝️", "title": "Mở Rương Kho Báu", "type": "🍀 May rủi", "category": "luck",
+     "desc": "Chọn 1 trong 12 rương, mở đúng rương kho báu thưởng cực lớn."},
+    {"key": "wordle", "emoji": "🟩", "title": "Wordle", "type": "🧠 Trí tuệ", "category": "logic",
+     "desc": "Đoán từ 5 chữ trong 6 lượt (tiếng Anh hoặc tiếng Việt không dấu)."},
+    {"key": "mathquiz", "emoji": "🧮", "title": "Tính Nhẩm", "type": "🧠 Trí tuệ", "category": "logic",
+     "desc": "Giải 1 phép tính trong thời gian giới hạn — càng nhanh & đúng càng nhiều thưởng."},
+    {"key": "memory", "emoji": "🧩", "title": "Trí Nhớ", "type": "🧠 Trí tuệ", "category": "logic",
+     "desc": "Ghi nhớ và bấm lại đúng thứ tự dãy số vừa hiện ra."},
+    {"key": "flag", "emoji": "🚩", "title": "Đoán Cờ", "type": "🧠 Trí tuệ", "category": "knowledge",
+     "desc": "Nhìn lá cờ, chọn đúng tên quốc gia trong 4 lựa chọn."},
+    {"key": "country", "emoji": "🌍", "title": "Đoán Quốc Gia", "type": "🧠 Trí tuệ", "category": "knowledge",
+     "desc": "Đọc gợi ý (thủ đô, đặc điểm nổi bật...) rồi đoán đúng quốc gia."},
+    {"key": "culture", "emoji": "🎎", "title": "Đoán Văn Hoá", "type": "🧠 Trí tuệ", "category": "knowledge",
+     "desc": "Đoán biểu tượng/nét văn hoá thuộc về quốc gia hay vùng nào."},
+    {"key": "app", "emoji": "📱", "title": "Đoán Ứng Dụng", "type": "🧠 Trí tuệ", "category": "knowledge",
+     "desc": "Đoán tên ứng dụng/mạng xã hội qua biểu tượng emoji + mô tả gợi ý."},
+    {"key": "tradition", "emoji": "🏮", "title": "Đoán Truyền Thống", "type": "🧠 Trí tuệ", "category": "knowledge",
+     "desc": "Đoán tên lễ hội/phong tục truyền thống qua mô tả gợi ý."},
+]
+
+GAME_LIST_BY_KEY = {info["key"]: info for info in GAME_LIST_INFO}
 
 # Deltan thưởng thêm cho 3 game cũ khi thắng (ngoài phần thưởng vé cũ), tính
 # theo cùng công thức độ khó dùng cho 4 game mới bên dưới (xác suất thắng
@@ -465,6 +509,162 @@ def play_dice(guess_high_low: str) -> dict:
     return {"win": win, "roll": roll, "actual": actual}
 
 
+# ---- Tính Nhẩm (không may rủi — đúng luôn thắng, sai luôn thua) ----
+MATH_QUIZ_DELTAN_REWARD = 4
+MATH_QUIZ_AURA_REWARD = 1.5
+
+
+def generate_math_question() -> dict:
+    """Sinh 1 phép tính ngẫu nhiên (+ - x) với số vừa phải, trả về đề bài + đáp án."""
+    op = random.choice(["+", "-", "x"])
+    if op == "x":
+        a, b = random.randint(2, 12), random.randint(2, 12)
+        answer = a * b
+    elif op == "+":
+        a, b = random.randint(10, 99), random.randint(10, 99)
+        answer = a + b
+    else:
+        a = random.randint(10, 99)
+        b = random.randint(10, a)  # đảm bảo không ra số âm
+        answer = a - b
+    return {"question": f"{a} {op} {b}", "answer": answer}
+
+
+def check_math_answer(question_state: dict, guess_text: str) -> dict:
+    guess_text = guess_text.strip().replace(" ", "")
+    try:
+        guess = int(guess_text)
+    except ValueError:
+        return {"win": False, "invalid": True}
+    return {"win": guess == question_state["answer"], "invalid": False}
+
+
+# ---- Trí Nhớ (không may rủi — nhớ đúng dãy số thì thắng) ----
+MEMORY_SEQUENCE_LENGTH = 4
+MEMORY_DELTAN_REWARD = 6
+MEMORY_AURA_REWARD = 2.0
+
+
+def generate_memory_sequence(length: int = MEMORY_SEQUENCE_LENGTH) -> list[int]:
+    """Sinh dãy số ngẫu nhiên không lặp lại liên tiếp, mỗi số từ 1-9."""
+    seq = [random.randint(1, 9)]
+    for _ in range(length - 1):
+        nxt = random.randint(1, 9)
+        while nxt == seq[-1]:
+            nxt = random.randint(1, 9)
+        seq.append(nxt)
+    return seq
+
+
+# ---- 5 game "đoán trắc nghiệm" (Cờ / Quốc gia / Văn hoá / Ứng dụng / Truyền thống) ----
+# Tất cả đều là game trí tuệ — không có yếu tố may rủi, chọn đúng luôn thắng.
+QUIZ_DELTAN_REWARD = 5
+QUIZ_AURA_REWARD = 1.5
+
+# Mỗi mục: (emoji/hiển thị, đáp án đúng, list đáp án gây nhiễu)
+FLAG_QUESTIONS = [
+    ("🇻🇳", "Việt Nam", ["Trung Quốc", "Lào", "Campuchia"]),
+    ("🇯🇵", "Nhật Bản", ["Hàn Quốc", "Trung Quốc", "Thái Lan"]),
+    ("🇰🇷", "Hàn Quốc", ["Nhật Bản", "Triều Tiên", "Mông Cổ"]),
+    ("🇺🇸", "Mỹ (Hoa Kỳ)", ["Anh", "Canada", "Úc"]),
+    ("🇬🇧", "Anh", ["Mỹ (Hoa Kỳ)", "Pháp", "Úc"]),
+    ("🇫🇷", "Pháp", ["Ý", "Hà Lan", "Đức"]),
+    ("🇩🇪", "Đức", ["Bỉ", "Áo", "Ba Lan"]),
+    ("🇮🇹", "Ý", ["Pháp", "Mexico", "Ireland"]),
+    ("🇪🇸", "Tây Ban Nha", ["Bồ Đào Nha", "Mexico", "Colombia"]),
+    ("🇧🇷", "Brazil", ["Bồ Đào Nha", "Argentina", "Colombia"]),
+    ("🇨🇳", "Trung Quốc", ["Việt Nam", "Đài Loan", "Singapore"]),
+    ("🇹🇭", "Thái Lan", ["Lào", "Campuchia", "Myanmar"]),
+    ("🇮🇳", "Ấn Độ", ["Pakistan", "Bangladesh", "Sri Lanka"]),
+    ("🇷🇺", "Nga", ["Serbia", "Slovenia", "Ukraina"]),
+    ("🇨🇦", "Canada", ["Mỹ (Hoa Kỳ)", "Anh", "Úc"]),
+    ("🇦🇺", "Úc", ["New Zealand", "Anh", "Mỹ (Hoa Kỳ)"]),
+    ("🇲🇽", "Mexico", ["Ý", "Tây Ban Nha", "Bồ Đào Nha"]),
+    ("🇪🇬", "Ai Cập", ["Jordan", "UAE", "Ả Rập Xê Út"]),
+    ("🇿🇦", "Nam Phi", ["Kenya", "Nigeria", "Ghana"]),
+    ("🇸🇬", "Singapore", ["Malaysia", "Indonesia", "Trung Quốc"]),
+]
+
+COUNTRY_QUESTIONS = [
+    ("Thủ đô là Hà Nội, nổi tiếng với phở và áo dài.", "Việt Nam", ["Thái Lan", "Lào", "Campuchia"]),
+    ("Thủ đô là Tokyo, có núi Phú Sĩ và văn hoá anime.", "Nhật Bản", ["Hàn Quốc", "Trung Quốc", "Đài Loan"]),
+    ("Thủ đô là Paris, có tháp Eiffel.", "Pháp", ["Ý", "Đức", "Bỉ"]),
+    ("Thủ đô là Rome, có đấu trường Colosseum.", "Ý", ["Pháp", "Hy Lạp", "Tây Ban Nha"]),
+    ("Thủ đô là Cairo, nổi tiếng với kim tự tháp.", "Ai Cập", ["Jordan", "Ả Rập Xê Út", "Maroc"]),
+    ("Thủ đô là Canberra, có biểu tượng kangaroo.", "Úc", ["New Zealand", "Nam Phi", "Mỹ (Hoa Kỳ)"]),
+    ("Thủ đô là Ottawa, quốc gia lá phong đỏ.", "Canada", ["Mỹ (Hoa Kỳ)", "Anh", "Thụy Điển"]),
+    ("Thủ đô là Brasília, quê hương của bóng đá samba.", "Brazil", ["Argentina", "Bồ Đào Nha", "Mexico"]),
+    ("Thủ đô là New Delhi, sinh ra môn Yoga.", "Ấn Độ", ["Nepal", "Pakistan", "Sri Lanka"]),
+    ("Thủ đô là Seoul, nổi tiếng với K-pop.", "Hàn Quốc", ["Nhật Bản", "Triều Tiên", "Trung Quốc"]),
+    ("Thủ đô là Bangkok, đất nước Chùa Vàng.", "Thái Lan", ["Myanmar", "Lào", "Campuchia"]),
+    ("Thủ đô là Moscow, quốc gia rộng nhất thế giới.", "Nga", ["Trung Quốc", "Canada", "Kazakhstan"]),
+    ("Thủ đô là Washington D.C., biểu tượng Nữ thần Tự Do.", "Mỹ (Hoa Kỳ)", ["Anh", "Pháp", "Canada"]),
+    ("Thủ đô là Berlin, nổi tiếng với bia và xe hơi.", "Đức", ["Áo", "Hà Lan", "Thụy Sĩ"]),
+    ("Thủ đô là Madrid, nổi tiếng với bò tót và flamenco.", "Tây Ban Nha", ["Bồ Đào Nha", "Mexico", "Ý"]),
+]
+
+CULTURE_QUESTIONS = [
+    ("🎎 Búp bê Hina, trà đạo và Kimono.", "Nhật Bản", ["Trung Quốc", "Hàn Quốc", "Thái Lan"]),
+    ("🥢 Tết Nguyên Đán, áo dài và bánh chưng.", "Việt Nam", ["Trung Quốc", "Hàn Quốc", "Lào"]),
+    ("💃 Flamenco và đấu bò tót.", "Tây Ban Nha", ["Ý", "Bồ Đào Nha", "Mexico"]),
+    ("🎭 Kịch mặt nạ Opera Bắc Kinh.", "Trung Quốc", ["Nhật Bản", "Việt Nam", "Hàn Quốc"]),
+    ("🥁 Điệu múa Samba và lễ hội Carnival.", "Brazil", ["Argentina", "Colombia", "Mexico"]),
+    ("🫖 Văn hoá trà chiều và cricket.", "Anh", ["Mỹ (Hoa Kỳ)", "Ireland", "Úc"]),
+    ("🎻 Nhạc cổ điển Waltz và lâu đài cổ tích.", "Áo", ["Đức", "Thụy Sĩ", "Hungary"]),
+    ("🪘 Nhạc Gamelan và múa rối bóng Wayang.", "Indonesia", ["Malaysia", "Thái Lan", "Philippines"]),
+    ("🎨 Tranh Henna và trang phục Sari.", "Ấn Độ", ["Pakistan", "Bangladesh", "Nepal"]),
+    ("🪕 Nhạc đồng quê Country và cao bồi.", "Mỹ (Hoa Kỳ)", ["Canada", "Úc", "Anh"]),
+    ("🥋 Võ Taekwondo và Hanbok truyền thống.", "Hàn Quốc", ["Nhật Bản", "Trung Quốc", "Việt Nam"]),
+    ("🍝 Ẩm thực Pizza, Pasta và nhạc Opera.", "Ý", ["Pháp", "Hy Lạp", "Tây Ban Nha"]),
+]
+
+APP_QUESTIONS = [
+    ("👻 Biểu tượng bóng ma vàng, gửi ảnh tự huỷ.", "Snapchat", ["Instagram", "TikTok", "Messenger"]),
+    ("🎵 Nền tảng video ngắn nổi tiếng với nhảy trend.", "TikTok", ["YouTube Shorts", "Instagram Reels", "Snapchat"]),
+    ("📷 Đăng ảnh/video, có tính năng Story và Reels.", "Instagram", ["Facebook", "TikTok", "Pinterest"]),
+    ("💬 Ứng dụng nhắn tin mã hoá đầu-cuối màu xanh lá.", "WhatsApp", ["Telegram", "Messenger", "Zalo"]),
+    ("✈️ Ứng dụng nhắn tin có bot & kênh, biểu tượng máy bay giấy.", "Telegram", ["WhatsApp", "Discord", "Signal"]),
+    ("🎮 Ứng dụng chat cộng đồng gamer, có server và voice chat.", "Discord", ["Telegram", "Slack", "Twitch"]),
+    ("🐦 Mạng xã hội cũ có biểu tượng chú chim (nay đổi tên thành X).", "Twitter (X)", ["Threads", "Facebook", "Instagram"]),
+    ("🔍 Công cụ tìm kiếm phổ biến nhất thế giới.", "Google", ["Bing", "Yahoo", "Cốc Cốc"]),
+    ("▶️ Nền tảng xem video lớn nhất, có nút Subscribe.", "YouTube", ["TikTok", "Twitch", "Netflix"]),
+    ("🎧 Nghe nhạc trực tuyến, biểu tượng vòng tròn xanh lá.", "Spotify", ["Apple Music", "SoundCloud", "Zing MP3"]),
+    ("🛒 Sàn thương mại điện tử màu cam nổi tiếng ở VN.", "Shopee", ["Lazada", "Tiki", "Amazon"]),
+    ("🇻🇳 Ứng dụng nhắn tin phổ biến nhất Việt Nam.", "Zalo", ["Telegram", "WhatsApp", "Messenger"]),
+    ("🎬 Dịch vụ xem phim trả phí, logo chữ N đỏ.", "Netflix", ["YouTube", "Disney+", "HBO Max"]),
+    ("📌 Mạng xã hội lưu ý tưởng/ảnh vào bảng ghim.", "Pinterest", ["Instagram", "Tumblr", "Behance"]),
+]
+
+TRADITION_QUESTIONS = [
+    ("🧧 Lì xì đỏ và bánh chưng vào dịp năm mới âm lịch.", "Tết Nguyên Đán", ["Trung Thu", "Vu Lan", "Giáng Sinh"]),
+    ("🏮 Rước đèn lồng và múa lân dành cho trẻ em.", "Trung Thu", ["Tết Nguyên Đán", "Halloween", "Vu Lan"]),
+    ("🥚 Trứng sô-cô-la và thỏ mang biểu tượng mùa xuân.", "Lễ Phục Sinh (Easter)", ["Giáng Sinh", "Halloween", "Thanksgiving"]),
+    ("🎃 Hoá trang ma quái và xin kẹo 'trick or treat'.", "Halloween", ["Lễ Phục Sinh", "Thanksgiving", "Trung Thu"]),
+    ("🦃 Bữa tiệc gà tây tạ ơn ở Bắc Mỹ.", "Lễ Tạ Ơn (Thanksgiving)", ["Giáng Sinh", "Lễ Phục Sinh", "Halloween"]),
+    ("🎄 Cây thông trang trí và ông già Noel tặng quà.", "Giáng Sinh (Christmas)", ["Lễ Phục Sinh", "Thanksgiving", "Trung Thu"]),
+    ("🕉️ Lễ hội ánh sáng Diwali với đèn dầu.", "Diwali", ["Holi", "Eid al-Fitr", "Vesak"]),
+    ("🎨 Lễ hội té màu sắc lên nhau ở Ấn Độ.", "Holi", ["Diwali", "Eid al-Fitr", "Songkran"]),
+    ("💦 Lễ hội té nước mừng năm mới ở Thái Lan.", "Songkran", ["Holi", "Tết Nguyên Đán", "Diwali"]),
+    ("🌸 Ngắm hoa anh đào Sakura nở rộ mùa xuân.", "Hanami", ["Trung Thu", "Obon", "Songkran"]),
+    ("🕯️ Lễ hội tưởng nhớ tổ tiên với đèn lồng ở Nhật.", "Obon", ["Hanami", "Trung Thu", "Vu Lan"]),
+    ("🌙 Tháng nhịn ăn ban ngày rồi ăn mừng cuối tháng.", "Ramadan / Eid al-Fitr", ["Diwali", "Holi", "Vesak"]),
+]
+
+
+def _build_quiz_options(correct: str, distractors: list[str]) -> list[str]:
+    """Trộn ngẫu nhiên đáp án đúng với các đáp án nhiễu."""
+    options = [correct] + list(distractors)
+    random.shuffle(options)
+    return options
+
+
+def generate_quiz_question(pool: list[tuple[str, str, list[str]]]) -> dict:
+    """Chọn ngẫu nhiên 1 câu hỏi từ pool (đoán cờ/quốc gia/văn hoá/ứng dụng/truyền thống)."""
+    prompt, correct, distractors = random.choice(pool)
+    options = _build_quiz_options(correct, distractors)
+    return {"prompt": prompt, "correct": correct, "options": options}
+
+
 def _progress_bar(current: int, total: int, length: int = 12) -> str:
     """Thanh tiến trình dạng text, ví dụ: ▰▰▰▰▰▱▱▱▱▱▱▱"""
     if total <= 0:
@@ -513,6 +713,45 @@ def _classify_roles(member: discord.Member) -> dict[str, list[discord.Role]]:
         groups[f"{ICON_CROWN} Owner"].append(None)  # đánh dấu "là chủ server" dù không có role riêng
 
     return groups
+
+
+_STATUS_LABELS = {
+    discord.Status.online: ("🟢", "Đang online"),
+    discord.Status.idle: ("🌙", "Đang rời đi (Idle)"),
+    discord.Status.dnd: ("⛔", "Không làm phiền (DND)"),
+    discord.Status.offline: ("⚫", "Offline"),
+    discord.Status.invisible: ("⚫", "Offline"),
+}
+
+
+def _format_presence_block(member: discord.Member) -> str:
+    """Trạng thái online/offline + rich presence (game đang chơi, Spotify, v.v.) của member."""
+    emoji, label = _STATUS_LABELS.get(member.status, ("⚫", "Offline"))
+    lines = [f"{emoji} **{label}**"]
+
+    activities = [a for a in (member.activities or []) if a is not None]
+    for act in activities:
+        if isinstance(act, discord.Spotify):
+            lines.append(f"🎧 Đang nghe **{act.title}** — {act.artist}")
+        elif isinstance(act, discord.CustomActivity):
+            text = act.name or ""
+            if act.emoji:
+                text = f"{act.emoji} {text}".strip()
+            if text:
+                lines.append(f"💬 {text}")
+        elif isinstance(act, discord.Game):
+            lines.append(f"🎮 Đang chơi **{act.name}**")
+        elif isinstance(act, discord.Streaming):
+            lines.append(f"🔴 Đang stream **{act.name}**")
+        elif isinstance(act, discord.Activity):
+            verb = {
+                discord.ActivityType.watching: "Đang xem",
+                discord.ActivityType.listening: "Đang nghe",
+                discord.ActivityType.competing: "Đang thi đấu",
+            }.get(act.type, "Đang")
+            lines.append(f"✨ {verb} **{act.name}**")
+
+    return "\n".join(lines)
 
 
 def _format_roles_block(member: discord.Member, max_per_group: int = 4) -> str:
@@ -606,6 +845,11 @@ class CitizenView(discord.ui.LayoutView):
             _format_roles_block(member),
         ]
 
+        presence_lines = [
+            "### 📶 Trạng thái Discord",
+            _format_presence_block(member),
+        ]
+
         container = discord.ui.Container(
             discord.ui.Section(
                 "\n".join(header_lines),
@@ -613,6 +857,8 @@ class CitizenView(discord.ui.LayoutView):
             ),
             discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
             discord.ui.TextDisplay("\n".join(stats_lines)),
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
+            discord.ui.TextDisplay("\n".join(presence_lines)),
             discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
             discord.ui.TextDisplay("\n".join(roles_lines)),
             accent_color=discord.Colour.blurple(),
@@ -776,30 +1022,61 @@ class HelpView(discord.ui.LayoutView):
 
 
 # ==================== BẢNG XẾP HẠNG ====================
+def _leaderboard_lines(guild: discord.Guild, field: str, ranked: list[tuple[int, dict]], page: int) -> list[str]:
+    meta = LEADERBOARD_FIELDS[field]
+    total_pages = max(1, -(-len(ranked) // LEADERBOARD_PAGE_SIZE))  # ceil div
+    start = page * LEADERBOARD_PAGE_SIZE
+    page_items = ranked[start:start + LEADERBOARD_PAGE_SIZE]
+
+    lines = [
+        f"## {ICON_CUP} BẢNG XẾP HẠNG — {meta['label'].upper()}",
+        f"-# Trang **{page + 1}/{total_pages}**",
+    ]
+
+    if not page_items:
+        lines.append("*Chưa có dữ liệu nào để xếp hạng.*")
+    else:
+        for offset, (user_id, data) in enumerate(page_items):
+            rank = start + offset + 1
+            member = guild.get_member(user_id)
+            name = member.mention if member else f"`{user_id}`"
+            value = meta["fmt"](data.get(field, 0) or 0)
+            lines.append(f"{ICON_BULLET} `#{rank}` {name} — **{value}** {meta['icon']}")
+
+    return lines
+
+
 class LeaderboardView(discord.ui.LayoutView):
-    """Hiển thị top 10 theo Deltan / Level / Aura, dùng cho lệnh /bảng-xếp-hạng."""
+    """Hiển thị bảng xếp hạng theo Deltan / Level / Aura với nút chuyển trang, dùng cho /bảng-xếp-hạng."""
 
-    def __init__(self, guild: discord.Guild, field: str, ranked: list[tuple[int, dict]]):
-        super().__init__(timeout=None)
-        meta = LEADERBOARD_FIELDS[field]
+    def __init__(self, guild: discord.Guild, field: str, ranked: list[tuple[int, dict]], page: int = 0):
+        super().__init__(timeout=180)
+        self.guild, self.field, self.ranked, self.page = guild, field, ranked, page
+        total_pages = max(1, -(-len(ranked) // LEADERBOARD_PAGE_SIZE))
 
-        lines = [f"## {ICON_CUP} BẢNG XẾP HẠNG — {meta['label'].upper()}"]
-
-        if not ranked:
-            lines.append("*Chưa có dữ liệu nào để xếp hạng.*")
-        else:
-            for i, (user_id, data) in enumerate(ranked, start=1):
-                medal = _RANK_MEDALS.get(i, f"{ICON_BULLET} `#{i}`")
-                member = guild.get_member(user_id)
-                name = member.mention if member else f"`{user_id}`"
-                value = meta["fmt"](data.get(field, 0) or 0)
-                lines.append(f"{medal} {name} — **{value}** {meta['icon']}")
+        lines = _leaderboard_lines(guild, field, ranked, page)
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(
+                LeaderboardPageButton(self, -1, "◀", page <= 0),
+                LeaderboardPageButton(self, 1, "▶", page >= total_pages - 1),
+            ),
             accent_color=discord.Colour.gold(),
         )
         self.add_item(container)
+
+
+class LeaderboardPageButton(discord.ui.Button):
+    def __init__(self, parent: "LeaderboardView", delta: int, emoji: str, disabled: bool):
+        super().__init__(style=discord.ButtonStyle.secondary, emoji=emoji, disabled=disabled)
+        self.parent_view, self.delta = parent, delta
+
+    async def callback(self, interaction: discord.Interaction):
+        new_page = self.parent_view.page + self.delta
+        await interaction.response.edit_message(
+            view=LeaderboardView(self.parent_view.guild, self.parent_view.field, self.parent_view.ranked, new_page)
+        )
 
 
 # ==================== THÚ TỘI ẨN DANH ====================
@@ -830,7 +1107,7 @@ class ConfessionView(discord.ui.LayoutView):
 
 # ==================== VÉ GAME / MINI GAME (owner-checked) ====================
 class GameSelectView(discord.ui.LayoutView):
-    """Menu chọn mini game cho lệnh /game."""
+    """Bước 1 của /game: chọn danh mục (May Rủi / Trí Tuệ - Logic / Trí Tuệ - Kiến Thức)."""
 
     def __init__(self, owner_id: int, tickets: int):
         super().__init__(timeout=60)
@@ -839,27 +1116,77 @@ class GameSelectView(discord.ui.LayoutView):
             "## 🎮 MINI GAME",
             f"{ICON_TICKET} Vé của bạn: **{tickets}**  •  Mỗi lượt chơi tốn **{GAME_TICKET_COST}** {ICON_TICKET} "
             f"• Cách nhau tối thiểu **{GAME_COOLDOWN_SECONDS // 60} phút**/lượt",
-            "-# 3 game đầu thắng nhận lại vé + Deltan. 4 game dưới thắng nhận Deltan + Aura, "
-            "**thua sẽ bị trừ Aura** — game càng khó thưởng/phạt càng cao.",
-            "-# Chọn một trò chơi bên dưới:",
+            "-# Chọn 1 danh mục bên dưới để xem các game trong đó:",
         ]
+        for cat in GAME_CATEGORIES:
+            lines.append(f"{cat['emoji']} **{cat['title']}** — {cat['desc']}")
+
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
-            discord.ui.ActionRow(
-                GameChoiceButton(owner_id, "guess", "Đoán Số", "🔢"),
-                GameChoiceButton(owner_id, "rps", "Kéo Búa Bao", "✊"),
-                GameChoiceButton(owner_id, "dice", "Xúc Xắc", "🎲"),
-                GameChoiceButton(owner_id, "wordle", "Wordle", "🟩"),
-            ),
-            discord.ui.ActionRow(
-                GameChoiceButton(owner_id, "taixiu", "Tài Xỉu", "🎲"),
-                GameChoiceButton(owner_id, "bai", "Đoán Chất Bài", "🃏"),
-                GameChoiceButton(owner_id, "vongquay", "Vòng Quay May Mắn", "🎡"),
-                GameChoiceButton(owner_id, "ruong", "Mở Rương Kho Báu", "🗝️"),
-            ),
+            discord.ui.ActionRow(*[
+                GameCategoryButton(owner_id, tickets, cat["key"], cat["title"], cat["emoji"])
+                for cat in GAME_CATEGORIES
+            ]),
             accent_color=discord.Colour.blurple(),
         )
         self.add_item(container)
+
+
+class GameCategoryButton(discord.ui.Button):
+    def __init__(self, owner_id: int, tickets: int, category_key: str, label: str, emoji: str):
+        super().__init__(label=label, style=discord.ButtonStyle.primary, emoji=emoji)
+        self.owner_id, self.tickets, self.category_key = owner_id, tickets, category_key
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.owner_id):
+            return
+        await interaction.response.edit_message(
+            view=GameCategoryGamesView(self.owner_id, self.tickets, self.category_key)
+        )
+
+
+class GameCategoryGamesView(discord.ui.LayoutView):
+    """Bước 2 của /game: hiện các game trong 1 danh mục đã chọn + nút Quay lại."""
+
+    def __init__(self, owner_id: int, tickets: int, category_key: str):
+        super().__init__(timeout=60)
+        cat = next(c for c in GAME_CATEGORIES if c["key"] == category_key)
+        games = [info for info in GAME_LIST_INFO if info["category"] == category_key]
+
+        lines = [
+            f"## {cat['emoji']} {cat['title'].upper()}",
+            f"{ICON_TICKET} Vé của bạn: **{tickets}**  •  Mỗi lượt tốn **{GAME_TICKET_COST}** {ICON_TICKET}",
+        ]
+        for info in games:
+            lines.append(f"{info['emoji']} **{info['title']}** — {info['desc']}")
+        lines.append("-# Chọn một trò chơi bên dưới:")
+
+        rows = [
+            discord.ui.ActionRow(*[
+                GameChoiceButton(owner_id, info["key"], info["title"], info["emoji"])
+                for info in chunk
+            ])
+            for chunk in (games[i:i + 4] for i in range(0, len(games), 4))
+        ]
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            *rows,
+            discord.ui.ActionRow(GameBackButton(owner_id, tickets)),
+            accent_color=discord.Colour.blurple(),
+        )
+        self.add_item(container)
+
+
+class GameBackButton(discord.ui.Button):
+    def __init__(self, owner_id: int, tickets: int):
+        super().__init__(label="Quay lại danh mục", style=discord.ButtonStyle.secondary, emoji="◀")
+        self.owner_id, self.tickets = owner_id, tickets
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.owner_id):
+            return
+        await interaction.response.edit_message(view=GameSelectView(self.owner_id, self.tickets))
 
 
 async def _reject_if_not_owner(interaction: discord.Interaction, owner_id: int) -> bool:
@@ -903,6 +1230,21 @@ class GameChoiceButton(discord.ui.Button):
         elif self.game_key == "wordle":
             await interaction.response.send_message(
                 view=WordleModeView(interaction.guild.id, interaction.user.id),
+                ephemeral=True,
+            )
+        elif self.game_key == "mathquiz":
+            await interaction.response.send_message(
+                view=MathQuizView(interaction.guild.id, interaction.user.id),
+                ephemeral=True,
+            )
+        elif self.game_key == "memory":
+            await interaction.response.send_message(
+                view=MemoryGameView(interaction.guild.id, interaction.user.id),
+                ephemeral=True,
+            )
+        elif self.game_key in QUIZ_GAME_CONFIG:
+            await interaction.response.send_message(
+                view=QuizGameView(interaction.guild.id, interaction.user.id, self.game_key),
                 ephemeral=True,
             )
         elif self.game_key in GAME_DEFS:
@@ -1205,6 +1547,361 @@ class NewGameButton(discord.ui.Button):
         except firebase.FirebaseUnavailable:
             # Vé đã bị trừ nhưng không cộng/trừ được Deltan/Aura — báo lỗi rõ ràng
             # thay vì im lặng mất phần thưởng của người chơi.
+            text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
+
+        await interaction.edit_original_response(view=GameResultView(text))
+
+
+# ==================== TÍNH NHẨM (game trí tuệ - không may rủi) ====================
+class MathQuizView(discord.ui.LayoutView):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=60)
+        lines = [
+            "### 🧮 Tính Nhẩm",
+            f"Giải đúng phép tính để thắng — không có yếu tố may rủi! "
+            f"Tốn **{GAME_TICKET_COST}** {ICON_TICKET} mỗi lượt.",
+            f"Đúng nhận **+{MATH_QUIZ_DELTAN_REWARD} {ICON_DELTAN}** và **+{MATH_QUIZ_AURA_REWARD} {ICON_AURA}** "
+            f"— sai bị trừ **-{MATH_QUIZ_AURA_REWARD} {ICON_AURA}**.",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(MathQuizStartButton(guild_id, user_id)),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class MathQuizStartButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(label="Bắt đầu", style=discord.ButtonStyle.success, emoji="▶️")
+        self.guild_id, self.user_id = guild_id, user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        # Không defer vì cần mở modal ngay sau response đầu tiên.
+        try:
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.response.edit_message(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.response.edit_message(
+                view=GameResultView(_format_no_ticket_message(spend)),
+            )
+            return
+
+        question = generate_math_question()
+        await interaction.response.send_modal(MathQuizModal(self.guild_id, self.user_id, question))
+
+
+class MathQuizModal(discord.ui.Modal):
+    def __init__(self, guild_id: int, user_id: int, question: dict):
+        super().__init__(title="🧮 Tính Nhẩm")
+        self.guild_id, self.user_id, self.question = guild_id, user_id, question
+        self.answer_input = discord.ui.TextInput(
+            label=f"{question['question']} = ?",
+            placeholder="Nhập đáp án...",
+            max_length=10,
+        )
+        self.add_item(self.answer_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        result = check_math_answer(self.question, self.answer_input.value)
+
+        try:
+            if result["win"]:
+                await firebase.add_deltan(self.guild_id, self.user_id, MATH_QUIZ_DELTAN_REWARD)
+                await firebase.add_aura(self.guild_id, self.user_id, MATH_QUIZ_AURA_REWARD)
+                text = (
+                    f"{ICON_CHECK} Chính xác! **{self.question['question']} = {self.question['answer']}**.\n"
+                    f"Bạn nhận **+{MATH_QUIZ_DELTAN_REWARD} {ICON_DELTAN}** và **+{MATH_QUIZ_AURA_REWARD} {ICON_AURA}**!"
+                )
+            else:
+                await firebase.add_aura(self.guild_id, self.user_id, -MATH_QUIZ_AURA_REWARD)
+                wrong_note = "*(không phải là một số hợp lệ)*" if result["invalid"] else ""
+                text = (
+                    f"{ICON_CROSS} Sai rồi {wrong_note}! Đáp án đúng: "
+                    f"**{self.question['question']} = {self.question['answer']}**.\n"
+                    f"Bạn bị trừ **-{MATH_QUIZ_AURA_REWARD} {ICON_AURA}**."
+                )
+        except firebase.FirebaseUnavailable:
+            text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
+
+        await interaction.response.send_message(view=GameResultView(text), ephemeral=True)
+
+
+# ==================== TRÍ NHỚ (game trí tuệ - không may rủi) ====================
+class MemoryGameView(discord.ui.LayoutView):
+    """Bước 1: hiện dãy số cần nhớ trong vài giây, sau đó chuyển sang bước nhập lại."""
+
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=60)
+        lines = [
+            "### 🧩 Trí Nhớ",
+            f"Ghi nhớ dãy số bên dưới rồi bấm lại **đúng thứ tự** ở bước sau — không may rủi! "
+            f"Tốn **{GAME_TICKET_COST}** {ICON_TICKET} mỗi lượt.",
+            f"Đúng nhận **+{MEMORY_DELTAN_REWARD} {ICON_DELTAN}** và **+{MEMORY_AURA_REWARD} {ICON_AURA}** "
+            f"— sai bị trừ **-{MEMORY_AURA_REWARD} {ICON_AURA}**.",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(MemoryStartButton(guild_id, user_id)),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class MemoryStartButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(label="Bắt đầu", style=discord.ButtonStyle.success, emoji="▶️")
+        self.guild_id, self.user_id = guild_id, user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        await interaction.response.defer()
+
+        try:
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.edit_original_response(
+                view=GameResultView(_format_no_ticket_message(spend)),
+            )
+            return
+
+        sequence = generate_memory_sequence()
+        await interaction.edit_original_response(
+            view=MemorySequenceShowView(self.guild_id, self.user_id, sequence)
+        )
+
+
+class MemorySequenceShowView(discord.ui.LayoutView):
+    """Hiện dãy số cần nhớ + nút để chuyển sang màn nhập lại khi đã sẵn sàng."""
+
+    def __init__(self, guild_id: int, user_id: int, sequence: list[int]):
+        super().__init__(timeout=60)
+        seq_text = "   ".join(f"`{n}`" for n in sequence)
+        lines = [
+            "### 🧩 Trí Nhớ — Ghi nhớ dãy số này!",
+            f"## {seq_text}",
+            "-# Nhớ kỹ thứ tự rồi bấm **Sẵn sàng** để bấm lại đúng thứ tự (dãy sẽ bị ẩn đi).",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(MemoryReadyButton(guild_id, user_id, sequence)),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class MemoryReadyButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int, sequence: list[int]):
+        super().__init__(label="Sẵn sàng — Nhập lại", style=discord.ButtonStyle.primary, emoji="✅")
+        self.guild_id, self.user_id, self.sequence = guild_id, user_id, sequence
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+        await interaction.response.edit_message(
+            view=MemoryInputView(self.guild_id, self.user_id, self.sequence, [])
+        )
+
+
+class MemoryInputView(discord.ui.LayoutView):
+    """Bàn phím số 1-9 để người chơi bấm lại đúng thứ tự dãy đã cho."""
+
+    def __init__(self, guild_id: int, user_id: int, sequence: list[int], picked: list[int]):
+        super().__init__(timeout=60)
+        picked_text = " ".join(f"`{n}`" for n in picked) if picked else "*(chưa bấm số nào)*"
+        lines = [
+            "### 🧩 Trí Nhớ — Bấm lại đúng thứ tự",
+            f"Đã bấm: {picked_text}  ({len(picked)}/{len(sequence)})",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(*[
+                MemoryDigitButton(guild_id, user_id, sequence, picked, n) for n in range(1, 6)
+            ]),
+            discord.ui.ActionRow(*[
+                MemoryDigitButton(guild_id, user_id, sequence, picked, n) for n in range(6, 10)
+            ]),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class MemoryDigitButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int, sequence: list[int], picked: list[int], digit: int):
+        super().__init__(label=str(digit), style=discord.ButtonStyle.secondary)
+        self.guild_id, self.user_id = guild_id, user_id
+        self.sequence, self.picked, self.digit = sequence, picked, digit
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        new_picked = self.picked + [self.digit]
+        expected = self.sequence[len(self.picked)]
+
+        if self.digit != expected:
+            # Bấm sai số ngay lập tức -> kết thúc ván, thua luôn.
+            await interaction.response.defer()
+            try:
+                await firebase.add_aura(self.guild_id, self.user_id, -MEMORY_AURA_REWARD)
+            except firebase.FirebaseUnavailable:
+                pass
+            seq_text = " ".join(f"`{n}`" for n in self.sequence)
+            text = (
+                f"{ICON_CROSS} Sai rồi! Dãy đúng là: {seq_text}.\n"
+                f"Bạn bị trừ **-{MEMORY_AURA_REWARD} {ICON_AURA}**."
+            )
+            await interaction.edit_original_response(view=GameResultView(text))
+            return
+
+        if len(new_picked) == len(self.sequence):
+            # Bấm đủ và đúng hết -> thắng.
+            await interaction.response.defer()
+            try:
+                await firebase.add_deltan(self.guild_id, self.user_id, MEMORY_DELTAN_REWARD)
+                await firebase.add_aura(self.guild_id, self.user_id, MEMORY_AURA_REWARD)
+                text = (
+                    f"{ICON_CHECK} Chính xác! Bạn nhận **+{MEMORY_DELTAN_REWARD} {ICON_DELTAN}** "
+                    f"và **+{MEMORY_AURA_REWARD} {ICON_AURA}**!"
+                )
+            except firebase.FirebaseUnavailable:
+                text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
+            await interaction.edit_original_response(view=GameResultView(text))
+            return
+
+        # Đúng nhưng chưa đủ dãy -> cập nhật lại bàn phím, tiếp tục bấm.
+        await interaction.response.edit_message(
+            view=MemoryInputView(self.guild_id, self.user_id, self.sequence, new_picked)
+        )
+
+
+# ==================== 5 GAME TRẮC NGHIỆM (Cờ/Quốc gia/Văn hoá/Ứng dụng/Truyền thống) ====================
+QUIZ_GAME_CONFIG = {
+    "flag": {"title": "🚩 Đoán Cờ", "pool": FLAG_QUESTIONS, "prompt_label": "Lá cờ này là của quốc gia nào?", "big_prompt": True},
+    "country": {"title": "🌍 Đoán Quốc Gia", "pool": COUNTRY_QUESTIONS, "prompt_label": "Đoán quốc gia qua gợi ý:", "big_prompt": False},
+    "culture": {"title": "🎎 Đoán Văn Hoá", "pool": CULTURE_QUESTIONS, "prompt_label": "Nét văn hoá này thuộc về đâu?", "big_prompt": False},
+    "app": {"title": "📱 Đoán Ứng Dụng", "pool": APP_QUESTIONS, "prompt_label": "Đây là ứng dụng nào?", "big_prompt": False},
+    "tradition": {"title": "🏮 Đoán Truyền Thống", "pool": TRADITION_QUESTIONS, "prompt_label": "Đây là lễ hội/truyền thống nào?", "big_prompt": False},
+}
+
+
+class QuizGameView(discord.ui.LayoutView):
+    """View chung cho 5 game trắc nghiệm (Cờ/Quốc gia/Văn hoá/Ứng dụng/Truyền thống)."""
+
+    def __init__(self, guild_id: int, user_id: int, quiz_key: str):
+        super().__init__(timeout=60)
+        cfg = QUIZ_GAME_CONFIG[quiz_key]
+        lines = [
+            f"### {cfg['title']}",
+            f"Không may rủi — chọn đúng luôn thắng! Tốn **{GAME_TICKET_COST}** {ICON_TICKET} mỗi lượt.",
+            f"Đúng nhận **+{QUIZ_DELTAN_REWARD} {ICON_DELTAN}** và **+{QUIZ_AURA_REWARD} {ICON_AURA}** "
+            f"— sai bị trừ **-{QUIZ_AURA_REWARD} {ICON_AURA}**.",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(QuizStartButton(guild_id, user_id, quiz_key)),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class QuizStartButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int, quiz_key: str):
+        super().__init__(label="Bắt đầu", style=discord.ButtonStyle.success, emoji="▶️")
+        self.guild_id, self.user_id, self.quiz_key = guild_id, user_id, quiz_key
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        await interaction.response.defer()
+
+        try:
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.edit_original_response(
+                view=GameResultView(_format_no_ticket_message(spend)),
+            )
+            return
+
+        cfg = QUIZ_GAME_CONFIG[self.quiz_key]
+        question = generate_quiz_question(cfg["pool"])
+        await interaction.edit_original_response(
+            view=QuizQuestionView(self.guild_id, self.user_id, self.quiz_key, question)
+        )
+
+
+class QuizQuestionView(discord.ui.LayoutView):
+    def __init__(self, guild_id: int, user_id: int, quiz_key: str, question: dict):
+        super().__init__(timeout=60)
+        cfg = QUIZ_GAME_CONFIG[quiz_key]
+        prompt_display = f"# {question['prompt']}" if cfg["big_prompt"] else f"**{question['prompt']}**"
+        lines = [
+            f"### {cfg['title']}",
+            cfg["prompt_label"],
+            prompt_display,
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(*[
+                QuizOptionButton(guild_id, user_id, quiz_key, question, opt)
+                for opt in question["options"]
+            ]),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class QuizOptionButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int, quiz_key: str, question: dict, option: str):
+        super().__init__(label=option[:80], style=discord.ButtonStyle.secondary)
+        self.guild_id, self.user_id, self.quiz_key = guild_id, user_id, quiz_key
+        self.question, self.option = question, option
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        await interaction.response.defer()
+        win = self.option == self.question["correct"]
+
+        try:
+            if win:
+                await firebase.add_deltan(self.guild_id, self.user_id, QUIZ_DELTAN_REWARD)
+                await firebase.add_aura(self.guild_id, self.user_id, QUIZ_AURA_REWARD)
+                text = (
+                    f"{ICON_CHECK} Chính xác! Đáp án là **{self.question['correct']}**.\n"
+                    f"Bạn nhận **+{QUIZ_DELTAN_REWARD} {ICON_DELTAN}** và **+{QUIZ_AURA_REWARD} {ICON_AURA}**!"
+                )
+            else:
+                await firebase.add_aura(self.guild_id, self.user_id, -QUIZ_AURA_REWARD)
+                text = (
+                    f"{ICON_CROSS} Sai rồi! Đáp án đúng là **{self.question['correct']}**.\n"
+                    f"Bạn bị trừ **-{QUIZ_AURA_REWARD} {ICON_AURA}**."
+                )
+        except firebase.FirebaseUnavailable:
             text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
 
         await interaction.edit_original_response(view=GameResultView(text))

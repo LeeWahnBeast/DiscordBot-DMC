@@ -45,6 +45,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.voice_states = True
+intents.presences = True  # cần để đọc trạng thái online/offline + rich presence cho /công-dân
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 _message_cooldowns: dict[tuple[int, int], float] = {}
@@ -264,7 +265,7 @@ async def leaderboard_command(interaction: discord.Interaction, loại: discord.
 
     await interaction.response.defer(thinking=True)
     try:
-        ranked = await firebase.get_leaderboard(interaction.guild.id, loại.value, level.LEADERBOARD_SIZE)
+        ranked = await firebase.get_leaderboard(interaction.guild.id, loại.value, level.LEADERBOARD_MAX_FETCH)
     except firebase.FirebaseUnavailable:
         await interaction.followup.send("❌ Không đọc được dữ liệu lúc này, thử lại sau nhé!")
         return
@@ -668,7 +669,7 @@ HELP_CATEGORIES = [
                 "desc": f"Điểm danh nhận Deltan mỗi ngày ({level.DAILY_OPEN_HOUR:02d}:00–{level.DAILY_CLOSE_HOUR:02d}:00 giờ VN).",
                 "role": "Ai cũng dùng được",
             },
-            {"name": "game", "desc": "Chơi 8 mini game (kể cả Wordle) để kiếm vé, Deltan và Aura.", "role": "Ai cũng dùng được"},
+            {"name": "game", "desc": "Chọn danh mục (May Rủi / Trí Tuệ) rồi chơi mini game để kiếm vé, Deltan và Aura.", "role": "Ai cũng dùng được"},
             {"name": "tặng", "desc": "Tặng Deltan của bạn cho một thành viên khác.", "role": "Ai cũng dùng được"},
             {
                 "name": "deltan-shop",
