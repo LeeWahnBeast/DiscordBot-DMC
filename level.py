@@ -11,6 +11,7 @@ import datetime
 import discord
 
 import firebase
+from wordlist import WORDLE_WORDS_EN, WORDLE_WORDS_VI
 
 # Server chạy bot (Render) dùng giờ UTC, nhưng daily/streak phải theo giờ Việt
 # Nam (UTC+7) chứ không phải giờ hệ thống — cố định offset vì VN không có DST.
@@ -30,6 +31,13 @@ ICON_MOD = "<:mod:1553016085140349069>"
 ICON_CROWN = "<:vuongmien:1553254452083822692>"
 ICON_STREAK = "<:streak:1553254951709581373>"
 ICON_BADGE = "<:huyhieu:1553175460534423683>"
+ICON_PARTY = "<:party:1553274852016791562>"
+ICON_TOP1 = "<:top1:1553282917357199400>"
+ICON_TOP2 = "<:top2:1553282914459066370>"
+ICON_TOP3 = "<:top3:1553282911761989642>"
+ICON_CUP = "<:cup:1553283351346020392>"
+ICON_WARNING_CHECK = "<:warning_check:1553283556367925308>"  # đã "check" xong nhưng vẫn là 1 dạng nhắc nhở
+ICON_BULLET = "<:bullet_triangle_glass_blue:1553284598375653437>"
 
 ICON_CHECK = "<:dautich:1553019524335271996>"
 ICON_CROSS = "<:daucheo:1553019526772170762>"
@@ -66,8 +74,9 @@ DAILY_MAX_MESSAGES_BEFORE_RESEND = 30  # quá 30 tin nhắn thì gửi lại con
 GAME_TICKET_COST = 1        # số vé tốn mỗi lượt chơi bất kỳ mini game nào
 TICKETS_MAX = 5             # tối đa 5 vé (reset đầy mỗi ngày mới)
 TICKETS_REGEN_SECONDS = 3 * 60 * 60  # mỗi vé đã dùng hồi lại sau 3 tiếng
+GAME_COOLDOWN_SECONDS = 5 * 60  # chơi xong 1 ván (bất kỳ game nào) phải đợi 5 phút mới chơi tiếp
 
-DELTAN_PER_TICKET = 15      # giá quy đổi cho lệnh /đổi-vé (Deltan -> vé game)
+DELTAN_PER_TICKET = 15      # giá quy đổi trong /deltan-shop (Deltan -> vé game)
 GIFT_MIN_DELTAN = 1         # số Deltan tối thiểu có thể tặng qua lệnh /tặng
 
 # ==================== CẤU HÌNH THÚ TỘI ẨN DANH ====================
@@ -80,7 +89,7 @@ LEADERBOARD_FIELDS = {
     "aura": {"label": "Aura", "icon": ICON_AURA, "fmt": lambda v: f"{v:,.2f}"},
 }
 LEADERBOARD_SIZE = 10
-_RANK_MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+_RANK_MEDALS = {1: ICON_TOP1, 2: ICON_TOP2, 3: ICON_TOP3}
 
 
 # ==================== CÔNG THỨC XP / LEVEL (kiểu MEE6) ====================
@@ -286,7 +295,7 @@ class DailyClaimButton(discord.ui.Button):
 
         if not result["ok"]:
             await interaction.followup.send(
-                f"{ICON_WARNING} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
+                f"{ICON_WARNING_CHECK} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
                 ephemeral=True,
             )
             return
@@ -300,7 +309,7 @@ class DailyClaimButton(discord.ui.Button):
 
 # ==================== VÉ GAME / MINI GAME ====================
 GAME_CHOICES = [
-    "đoán số", "kéo búa bao", "xúc xắc",
+    "đoán số", "kéo búa bao", "xúc xắc", "wordle",
     "tài xỉu", "đoán chất bài", "vòng quay may mắn", "mở rương kho báu",
 ]
 
@@ -352,6 +361,53 @@ GAME_DEFS = {
 
 _CARD_SUITS = [("♠", "Bích"), ("♥", "Cơ"), ("♦", "Rô"), ("♣", "Chuồn")]
 _CARD_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# ---- Wordle ----
+WORDLE_WORD_LENGTH = 5
+WORDLE_MAX_GUESSES = 6
+# Thắng/thua thưởng-phạt Deltan/Aura giống nhóm "4 game mới": xác suất thắng
+# thực tế của Wordle khó hơn hẳn (phải đoán đúng cả từ trong 6 lượt) nên đặt
+# mức thưởng cao nhất trong tất cả các mini game.
+WORDLE_DELTAN_REWARD = 10
+WORDLE_AURA_REWARD = 3.5
+
+WORDLE_SQUARE_CORRECT = "🟩"   # đúng chữ, đúng vị trí
+WORDLE_SQUARE_PRESENT = "🟨"   # đúng chữ, sai vị trí
+WORDLE_SQUARE_ABSENT = "⬛"    # không có trong từ
+
+
+def wordle_pick_word(mode: str) -> str:
+    """mode: 'en' (tiếng Anh) hoặc 'vi' (tiếng Việt không dấu)."""
+    pool = WORDLE_WORDS_EN if mode == "en" else WORDLE_WORDS_VI
+    return random.choice(pool)
+
+
+def wordle_score_guess(guess: str, secret: str) -> list[str]:
+    """
+    Chấm 1 lượt đoán theo đúng luật Wordle (xử lý đúng cả trường hợp chữ
+    cái lặp lại trong từ bí mật): trả về list ký hiệu (🟩/🟨/⬛) theo từng
+    vị trí của `guess`.
+    """
+    n = len(secret)
+    result = [WORDLE_SQUARE_ABSENT] * n
+    secret_letters = list(secret)
+
+    # Bước 1: đánh dấu đúng vị trí trước, "tiêu thụ" chữ cái đó khỏi secret_letters
+    for i in range(n):
+        if guess[i] == secret[i]:
+            result[i] = WORDLE_SQUARE_CORRECT
+            secret_letters[i] = None
+
+    # Bước 2: những ô còn lại, nếu chữ cái còn "tồn kho" trong secret_letters
+    # (chưa bị dùng ở bước 1) thì đánh dấu sai vị trí, rồi tiêu thụ luôn.
+    for i in range(n):
+        if result[i] == WORDLE_SQUARE_CORRECT:
+            continue
+        if guess[i] in secret_letters:
+            result[i] = WORDLE_SQUARE_PRESENT
+            secret_letters[secret_letters.index(guess[i])] = None
+
+    return result
 
 
 def play_new_game(game_key: str, guess_value: str) -> dict:
@@ -493,7 +549,7 @@ class LevelUpView(discord.ui.LayoutView):
         super().__init__(timeout=None)
         user_data = result["user"]
         lines = [
-            f"## 🎉 {member.mention} vừa lên **Level {result['new_level']}**!",
+            f"## {ICON_PARTY} {member.mention} vừa lên **Level {result['new_level']}**!",
             "",
             f"{ICON_LEVEL} Level: **{result['new_level']}**",
             f"{ICON_XP} XP: **{user_data.get('xp', 0)}**",
@@ -596,6 +652,108 @@ class LevelView(discord.ui.LayoutView):
         self.add_item(container)
 
 
+# ==================== /deltan-shop ====================
+DELTAN_SHOP_TICKET_OPTIONS = [1, 3, 5]  # số vé có thể mua mỗi lượt, tối đa = TICKETS_MAX
+
+
+class DeltanShopView(discord.ui.LayoutView):
+    """
+    Cửa hàng đổi Deltan lấy các thứ khác trong bot. Hiện tại chỉ có đổi vé
+    game, nhưng gộp chung vào đây để sau này thêm món gì liên quan tới Deltan
+    (vd đổi role, đổi vật phẩm...) thì chỉ cần thêm ActionRow/nút mới.
+    """
+
+    def __init__(self, guild_id: int, owner_id: int, deltan: int, tickets: int):
+        super().__init__(timeout=60)
+        self.owner_id = owner_id
+
+        lines = [
+            "## 🛒 DELTAN SHOP",
+            f"{ICON_DELTAN} Deltan của bạn: **{deltan}**  •  {ICON_TICKET} Vé hiện có: **{tickets}/{TICKETS_MAX}**",
+            f"-# 🎟️ Đổi vé chơi game — giá **{DELTAN_PER_TICKET} {ICON_DELTAN} / vé**.",
+        ]
+
+        buy_buttons = [
+            DeltanShopBuyButton(guild_id, owner_id, qty, qty * DELTAN_PER_TICKET)
+            for qty in DELTAN_SHOP_TICKET_OPTIONS
+        ]
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(*buy_buttons),
+            accent_color=discord.Colour.gold(),
+        )
+        self.add_item(container)
+
+
+class DeltanShopBuyButton(discord.ui.Button):
+    def __init__(self, guild_id: int, owner_id: int, quantity: int, cost: int):
+        super().__init__(
+            label=f"Mua {quantity} vé — {cost} Deltan",
+            style=discord.ButtonStyle.success,
+            emoji=ICON_TICKET,
+        )
+        self.guild_id, self.owner_id, self.quantity, self.cost = guild_id, owner_id, quantity, cost
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.owner_id):
+            return
+
+        # Ack ngay (deferred update) trước khi gọi Firebase, tránh timeout 3s.
+        await interaction.response.defer()
+
+        try:
+            state = await firebase.get_ticket_state(
+                self.guild_id, self.owner_id, TICKETS_MAX, TICKETS_REGEN_SECONDS, today_str(),
+            )
+        except firebase.FirebaseUnavailable:
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if state.get("tickets", 0) + self.quantity > TICKETS_MAX:
+            await interaction.edit_original_response(
+                view=GameResultView(
+                    f"{ICON_CROSS} Bạn chỉ được giữ tối đa **{TICKETS_MAX}** {ICON_TICKET}, "
+                    f"hiện có **{state.get('tickets', 0)}**, không thể mua thêm {self.quantity} vé."
+                ),
+            )
+            return
+
+        try:
+            spend = await firebase.spend_deltan(self.guild_id, self.owner_id, self.cost)
+        except firebase.FirebaseUnavailable:
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.edit_original_response(
+                view=GameResultView(
+                    f"{ICON_CROSS} Bạn không đủ Deltan! Cần **{self.cost} {ICON_DELTAN}**, "
+                    f"hiện có **{spend['deltan']} {ICON_DELTAN}**."
+                ),
+            )
+            return
+
+        try:
+            new_tickets = await firebase.add_tickets(self.guild_id, self.owner_id, self.quantity)
+        except firebase.FirebaseUnavailable:
+            # Đã trừ Deltan nhưng chưa cộng được vé — hoàn Deltan lại ngay.
+            await firebase.add_deltan(self.guild_id, self.owner_id, self.cost)
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Có lỗi kết nối, Deltan đã được hoàn lại, thử lại sau nhé!"),
+            )
+            return
+
+        # Làm mới lại shop với số dư mới để có thể mua tiếp ngay trong cùng 1 tin nhắn.
+        await interaction.edit_original_response(
+            view=DeltanShopView(self.guild_id, self.owner_id, spend["deltan"], new_tickets),
+        )
+
+
 # ==================== /help ====================
 class HelpView(discord.ui.LayoutView):
     """Danh sách lệnh + vai trò cần thiết, dùng cho lệnh /help."""
@@ -608,7 +766,7 @@ class HelpView(discord.ui.LayoutView):
             lines.append(f"### {cat['title']}")
             for cmd in cat["commands"]:
                 role_note = f" · *{cmd['role']}*" if cmd.get("role") else ""
-                lines.append(f"{ICON_BADGE} `/{cmd['name']}` — {cmd['desc']}{role_note}")
+                lines.append(f"{ICON_BULLET} `/{cmd['name']}` — {cmd['desc']}{role_note}")
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
@@ -625,13 +783,13 @@ class LeaderboardView(discord.ui.LayoutView):
         super().__init__(timeout=None)
         meta = LEADERBOARD_FIELDS[field]
 
-        lines = [f"## 🏆 BẢNG XẾP HẠNG — {meta['label'].upper()}"]
+        lines = [f"## {ICON_CUP} BẢNG XẾP HẠNG — {meta['label'].upper()}"]
 
         if not ranked:
             lines.append("*Chưa có dữ liệu nào để xếp hạng.*")
         else:
             for i, (user_id, data) in enumerate(ranked, start=1):
-                medal = _RANK_MEDALS.get(i, f"`#{i}`")
+                medal = _RANK_MEDALS.get(i, f"{ICON_BULLET} `#{i}`")
                 member = guild.get_member(user_id)
                 name = member.mention if member else f"`{user_id}`"
                 value = meta["fmt"](data.get(field, 0) or 0)
@@ -679,7 +837,8 @@ class GameSelectView(discord.ui.LayoutView):
         self.owner_id = owner_id
         lines = [
             "## 🎮 MINI GAME",
-            f"{ICON_TICKET} Vé của bạn: **{tickets}**  •  Mỗi lượt chơi tốn **{GAME_TICKET_COST}** {ICON_TICKET}",
+            f"{ICON_TICKET} Vé của bạn: **{tickets}**  •  Mỗi lượt chơi tốn **{GAME_TICKET_COST}** {ICON_TICKET} "
+            f"• Cách nhau tối thiểu **{GAME_COOLDOWN_SECONDS // 60} phút**/lượt",
             "-# 3 game đầu thắng nhận lại vé + Deltan. 4 game dưới thắng nhận Deltan + Aura, "
             "**thua sẽ bị trừ Aura** — game càng khó thưởng/phạt càng cao.",
             "-# Chọn một trò chơi bên dưới:",
@@ -690,6 +849,7 @@ class GameSelectView(discord.ui.LayoutView):
                 GameChoiceButton(owner_id, "guess", "Đoán Số", "🔢"),
                 GameChoiceButton(owner_id, "rps", "Kéo Búa Bao", "✊"),
                 GameChoiceButton(owner_id, "dice", "Xúc Xắc", "🎲"),
+                GameChoiceButton(owner_id, "wordle", "Wordle", "🟩"),
             ),
             discord.ui.ActionRow(
                 GameChoiceButton(owner_id, "taixiu", "Tài Xỉu", "🎲"),
@@ -740,6 +900,11 @@ class GameChoiceButton(discord.ui.Button):
                 view=DiceView(interaction.guild.id, interaction.user.id),
                 ephemeral=True,
             )
+        elif self.game_key == "wordle":
+            await interaction.response.send_message(
+                view=WordleModeView(interaction.guild.id, interaction.user.id),
+                ephemeral=True,
+            )
         elif self.game_key in GAME_DEFS:
             await interaction.response.send_message(
                 view=NewGameView(interaction.guild.id, interaction.user.id, self.game_key),
@@ -748,14 +913,26 @@ class GameChoiceButton(discord.ui.Button):
 
 
 async def _spend_ticket_or_none(guild_id: int, user_id: int) -> dict:
-    """Trả về dict {"ok": bool, "tickets": int, "next_regen_in": int|None} từ firebase.use_ticket."""
+    """
+    Trả về dict {"ok": bool, "tickets": int, "next_regen_in": int|None,
+    "reason": "cooldown"|"no_ticket"|None, "cooldown_remaining": int|None}
+    từ firebase.use_ticket. Mỗi lượt chơi (bất kỳ game nào) cách nhau tối
+    thiểu GAME_COOLDOWN_SECONDS, kiểm tra atomic cùng lúc với trừ vé.
+    """
     return await firebase.use_ticket(
-        guild_id, user_id, GAME_TICKET_COST, TICKETS_MAX, TICKETS_REGEN_SECONDS, today_str()
+        guild_id, user_id, GAME_TICKET_COST, TICKETS_MAX, TICKETS_REGEN_SECONDS, today_str(),
+        cooldown_seconds=GAME_COOLDOWN_SECONDS,
     )
 
 
 def _format_no_ticket_message(result: dict) -> str:
-    """Thông báo khi hết vé, kèm thời gian hồi vé kế tiếp nếu có."""
+    """Thông báo khi không chơi được: đang trong cooldown 5 phút, hoặc hết vé."""
+    if result.get("reason") == "cooldown":
+        remaining = max(result.get("cooldown_remaining", 0), 0)
+        minutes, seconds = divmod(remaining, 60)
+        time_text = f"{minutes} phút {seconds} giây" if minutes else f"{seconds} giây"
+        return f"{ICON_WARNING} Chơi hơi nhanh rồi đó! Nghỉ **{time_text}** nữa rồi quay lại chơi tiếp nhé."
+
     base = f"{ICON_CROSS} Vé = 0 thì ko thể chơi 😂😂"
     next_in = result.get("next_regen_in")
     if next_in and next_in > 0:
@@ -1031,3 +1208,270 @@ class NewGameButton(discord.ui.Button):
             text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
 
         await interaction.edit_original_response(view=GameResultView(text))
+
+
+# ==================== WORDLE ====================
+class WordleModeView(discord.ui.LayoutView):
+    """Bước 1 của /game -> Wordle: chọn tiếng Anh hay tiếng Việt không dấu."""
+
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=60)
+        lines = [
+            "### 🟩 Wordle",
+            f"Đoán đúng từ bí mật gồm **{WORDLE_WORD_LENGTH} chữ cái** trong tối đa "
+            f"**{WORDLE_MAX_GUESSES} lượt**. Tốn **{GAME_TICKET_COST}** {ICON_TICKET} mỗi ván.",
+            f"Thắng nhận **+{WORDLE_DELTAN_REWARD} {ICON_DELTAN}** và **+{WORDLE_AURA_REWARD} {ICON_AURA}** "
+            f"— thua bị trừ **-{WORDLE_AURA_REWARD} {ICON_AURA}**.",
+            "-# Chọn chế độ chơi:",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(
+                WordleModeButton(guild_id, user_id, "en", "Tiếng Anh", "🇬🇧"),
+                WordleModeButton(guild_id, user_id, "vi", "Tiếng Việt (không dấu)", "🇻🇳"),
+            ),
+            accent_color=discord.Colour.green(),
+        )
+        self.add_item(container)
+
+
+class WordleModeButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int, mode: str, label: str, emoji: str):
+        super().__init__(label=label, style=discord.ButtonStyle.success, emoji=emoji)
+        self.guild_id, self.user_id, self.mode = guild_id, user_id, mode
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        # Trừ vé ngay khi bắt đầu ván (không defer vì cần mở modal ngay sau
+        # response đầu tiên — modal chỉ mở được từ interaction CHƯA response).
+        try:
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.response.edit_message(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.response.edit_message(
+                view=GameResultView(_format_no_ticket_message(spend)),
+            )
+            return
+
+        secret = wordle_pick_word(self.mode)
+        state = WordleState(self.guild_id, self.user_id, self.mode, secret)
+        await interaction.response.edit_message(view=WordleGameView(state))
+
+
+class WordleState:
+    """Giữ trạng thái 1 ván Wordle đang chơi (không lưu Firebase, chỉ lưu tạm
+    trong bộ nhớ view — mất khi bot restart, chấp nhận được vì ván chơi ngắn)."""
+
+    def __init__(self, guild_id: int, user_id: int, mode: str, secret: str):
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.mode = mode
+        self.secret = secret
+        self.guesses: list[str] = []
+        self.rows: list[list[str]] = []
+        self.finished = False
+
+
+def _wordle_render_lines(state: WordleState) -> list[str]:
+    mode_label = "Tiếng Anh" if state.mode == "en" else "Tiếng Việt (không dấu)"
+    lines = [
+        "### 🟩 Wordle",
+        f"-# Chế độ: **{mode_label}** · Từ dài **{WORDLE_WORD_LENGTH}** chữ · "
+        f"Lượt **{len(state.guesses)}/{WORDLE_MAX_GUESSES}**",
+    ]
+    if not state.guesses:
+        lines.append("*Chưa đoán lượt nào. Bấm nút bên dưới để nhập từ đoán đầu tiên!*")
+    for guess, row in zip(state.guesses, state.rows):
+        squares = " ".join(row)
+        letters = "  ".join(guess.upper())
+        lines.append(f"{squares}\n`{letters}`")
+    return lines
+
+
+class WordleGameView(discord.ui.LayoutView):
+    """Hiển thị lưới các lượt đoán đã có + nút mở modal để nhập lượt tiếp theo."""
+
+    def __init__(self, state: WordleState):
+        super().__init__(timeout=180)
+        lines = _wordle_render_lines(state)
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(WordleGuessButton(state)),
+            accent_color=discord.Colour.green(),
+        )
+        self.add_item(container)
+
+
+class WordleGuessButton(discord.ui.Button):
+    def __init__(self, state: WordleState):
+        remaining = WORDLE_MAX_GUESSES - len(state.guesses)
+        super().__init__(
+            label=f"Nhập từ đoán ({remaining} lượt còn lại)",
+            style=discord.ButtonStyle.primary,
+            emoji="⌨️",
+        )
+        self.state = state
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.state.user_id):
+            return
+        await interaction.response.send_modal(WordleGuessModal(self.state))
+
+
+class WordleGuessModal(discord.ui.Modal):
+    """Bảng nhập (modal) để gõ từ đoán, thay vì phải gõ lệnh/chat ra kênh."""
+
+    def __init__(self, state: WordleState):
+        super().__init__(title=f"Wordle — Lượt {len(state.guesses) + 1}/{WORDLE_MAX_GUESSES}")
+        self.state = state
+        self.guess_input = discord.ui.TextInput(
+            label=f"Từ đoán của bạn ({WORDLE_WORD_LENGTH} chữ cái)",
+            placeholder="Nhập không dấu, không khoảng trắng...",
+            min_length=WORDLE_WORD_LENGTH,
+            max_length=WORDLE_WORD_LENGTH,
+            required=True,
+        )
+        self.add_item(self.guess_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        state = self.state
+        guess = self.guess_input.value.strip().lower()
+
+        if len(guess) != WORDLE_WORD_LENGTH or not guess.isalpha():
+            await interaction.response.send_message(
+                f"{ICON_CROSS} Từ đoán phải gồm đúng **{WORDLE_WORD_LENGTH} chữ cái**, không số/không ký tự đặc biệt.",
+                ephemeral=True,
+            )
+            return
+
+        row = wordle_score_guess(guess, state.secret)
+        state.guesses.append(guess)
+        state.rows.append(row)
+
+        won = guess == state.secret
+        lost_out_of_guesses = not won and len(state.guesses) >= WORDLE_MAX_GUESSES
+
+        if won or lost_out_of_guesses:
+            state.finished = True
+            lines = _wordle_render_lines(state)
+
+            try:
+                if won:
+                    await firebase.add_deltan(state.guild_id, state.user_id, WORDLE_DELTAN_REWARD)
+                    await firebase.add_aura(state.guild_id, state.user_id, WORDLE_AURA_REWARD)
+                    lines.append(
+                        f"\n{ICON_CHECK} Chính xác! Từ bí mật là **{state.secret.upper()}**. "
+                        f"Bạn nhận **+{WORDLE_DELTAN_REWARD} {ICON_DELTAN}** và **+{WORDLE_AURA_REWARD} {ICON_AURA}**!"
+                    )
+                else:
+                    await firebase.add_aura(state.guild_id, state.user_id, -WORDLE_AURA_REWARD)
+                    lines.append(
+                        f"\n{ICON_CROSS} Hết lượt! Từ bí mật là **{state.secret.upper()}**. "
+                        f"Bạn bị trừ **-{WORDLE_AURA_REWARD} {ICON_AURA}**."
+                    )
+            except firebase.FirebaseUnavailable:
+                lines.append(
+                    f"\n{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối."
+                )
+
+            container = discord.ui.Container(
+                discord.ui.TextDisplay("\n".join(lines)),
+                accent_color=discord.Colour.green() if won else discord.Colour.red(),
+            )
+            final_view = discord.ui.LayoutView(timeout=None)
+            final_view.add_item(container)
+            await interaction.response.edit_message(view=final_view)
+            return
+
+        # Chưa thắng/thua — hiện lại view với lượt đoán mới, cho đoán tiếp.
+        await interaction.response.edit_message(view=WordleGameView(state))
+
+
+# ==================== /mix-emoji ====================
+class MixEmojiView(discord.ui.LayoutView):
+    """View của /mix-emoji: bấm nút để mở bảng (modal) nhập 2 emoji, thay vì
+    phải gõ trực tiếp 2 emoji vào tham số lệnh."""
+
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=120)
+        self.owner_id = owner_id
+        lines = [
+            "### 🍳 Mix Emoji",
+            "Ghép 2 emoji thành 1 ảnh mashup (Google Emoji Kitchen). "
+            "Bấm nút bên dưới để mở bảng nhập emoji.",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(MixEmojiButton(owner_id)),
+            accent_color=discord.Colour.blurple(),
+        )
+        self.add_item(container)
+
+
+class MixEmojiButton(discord.ui.Button):
+    def __init__(self, owner_id: int):
+        super().__init__(label="Mix Emoji", style=discord.ButtonStyle.primary, emoji="🍳")
+        self.owner_id = owner_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.owner_id):
+            return
+        await interaction.response.send_modal(MixEmojiModal(self.owner_id))
+
+
+class MixEmojiModal(discord.ui.Modal):
+    """Bảng nhập 2 emoji để ghép, thay cho việc gõ 2 tham số emoji vào chat."""
+
+    def __init__(self, owner_id: int):
+        super().__init__(title="Mix Emoji")
+        self.owner_id = owner_id
+        self.emoji1_input = discord.ui.TextInput(
+            label="Emoji thứ nhất", placeholder="Vd: 🔥", min_length=1, max_length=8, required=True,
+        )
+        self.emoji2_input = discord.ui.TextInput(
+            label="Emoji thứ hai", placeholder="Vd: 😃", min_length=1, max_length=8, required=True,
+        )
+        self.add_item(self.emoji1_input)
+        self.add_item(self.emoji2_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        import emoji_mixer  # import cục bộ để tránh phụ thuộc vòng module
+
+        await interaction.response.defer(thinking=True)
+        emoji1 = self.emoji1_input.value.strip()
+        emoji2 = self.emoji2_input.value.strip()
+
+        result = await emoji_mixer.find_emoji_mix_url(emoji1, emoji2)
+
+        if not result["ok"]:
+            reason = result["reason"]
+            if reason == "invalid":
+                text = (
+                    f"{ICON_CROSS} Chỉ nhập được **1 emoji đơn** cho mỗi ô "
+                    f"(không phải chuỗi emoji ghép sẵn kiểu 👨‍👩‍👧)."
+                )
+            elif reason == "network":
+                text = f"{ICON_WARNING} Không kết nối được để kiểm tra ảnh ghép lúc này, thử lại sau nhé!"
+            else:
+                text = (
+                    f"{ICON_CROSS} Không tìm thấy ảnh ghép cho **{emoji1} + {emoji2}**. "
+                    f"Không phải cặp emoji nào cũng có ảnh ghép (Google vẽ tay thủ công từng cặp), thử cặp khác xem sao!"
+                )
+            await interaction.followup.send(text, ephemeral=True)
+            return
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay(f"### 🍳 {emoji1} + {emoji2}"),
+            discord.ui.MediaGallery(discord.MediaGalleryItem(result["url"])),
+            accent_color=discord.Colour.blurple(),
+        )
+        result_view = discord.ui.LayoutView(timeout=None)
+        result_view.add_item(container)
+        await interaction.followup.send(view=result_view)

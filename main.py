@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import aiohttp
 
+import emoji_mixer
 import firebase
 import level
 import tiktok
@@ -409,7 +410,7 @@ async def daily_command(interaction: discord.Interaction):
 
     if not result["ok"]:
         await interaction.response.send_message(
-            f"{level.ICON_WARNING} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
+            f"{level.ICON_WARNING_CHECK} Bạn đã nhận daily hôm nay rồi, quay lại vào ngày mai nhé!",
             ephemeral=True,
         )
         return
@@ -524,20 +525,14 @@ async def gift_command(
     )
 
 
-# ==================== LỆNH /đổi-vé ====================
-@bot.tree.command(name="đổi-vé", description=f"Đổi Deltan lấy vé chơi game ({level.DELTAN_PER_TICKET} Deltan / vé)")
-@discord.app_commands.describe(số_vé="Số vé muốn đổi")
-async def exchange_tickets_command(
-    interaction: discord.Interaction,
-    số_vé: discord.app_commands.Range[int, 1, level.TICKETS_MAX],
-):
+# ==================== LỆNH /deltan-shop ====================
+@bot.tree.command(name="deltan-shop", description=f"Cửa hàng đổi Deltan lấy vé chơi game ({level.DELTAN_PER_TICKET} Deltan / vé)")
+async def deltan_shop_command(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
         return
 
     await interaction.response.defer(thinking=True, ephemeral=True)
-    cost = số_vé * level.DELTAN_PER_TICKET
-
     try:
         state = await firebase.get_ticket_state(
             interaction.guild.id, interaction.user.id,
@@ -547,35 +542,11 @@ async def exchange_tickets_command(
         await interaction.followup.send(f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!")
         return
 
-    if state.get("tickets", 0) + số_vé > level.TICKETS_MAX:
-        await interaction.followup.send(
-            f"{level.ICON_CROSS} Bạn chỉ được giữ tối đa **{level.TICKETS_MAX}** {level.ICON_TICKET}, "
-            f"hiện có **{state.get('tickets', 0)}**, không thể đổi thêm {số_vé} vé."
-        )
-        return
-
-    try:
-        spend = await firebase.spend_deltan(interaction.guild.id, interaction.user.id, cost)
-    except firebase.FirebaseUnavailable:
-        await interaction.followup.send(f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!")
-        return
-
-    if not spend["ok"]:
-        await interaction.followup.send(
-            f"{level.ICON_CROSS} Bạn không đủ Deltan! Cần **{cost} {level.ICON_DELTAN}**, "
-            f"hiện có **{spend['deltan']} {level.ICON_DELTAN}**."
-        )
-        return
-
-    try:
-        await firebase.add_tickets(interaction.guild.id, interaction.user.id, số_vé)
-    except firebase.FirebaseUnavailable:
-        await firebase.add_deltan(interaction.guild.id, interaction.user.id, cost)
-        await interaction.followup.send(f"{level.ICON_WARNING} Có lỗi kết nối, Deltan đã được hoàn lại, thử lại sau nhé!")
-        return
-
     await interaction.followup.send(
-        f"{level.ICON_CHECK} Đã đổi **{cost} {level.ICON_DELTAN}** lấy **+{số_vé} {level.ICON_TICKET}**!"
+        view=level.DeltanShopView(
+            interaction.guild.id, interaction.user.id,
+            state.get("deltan", 0), state.get("tickets", 0),
+        )
     )
 
 
@@ -622,6 +593,63 @@ async def admin_adjust_command(
     )
 
 
+# ==================== LỆNH /mix-emoji ====================
+@bot.tree.command(name="mix-emoji", description="Ghép 2 emoji thành 1 ảnh mashup (Google Emoji Kitchen)")
+@discord.app_commands.describe(
+    emoji1="Emoji thứ nhất (để trống để mở bảng nhập bằng nút bấm)",
+    emoji2="Emoji thứ hai (để trống để mở bảng nhập bằng nút bấm)",
+)
+async def mix_emoji_command(
+    interaction: discord.Interaction,
+    emoji1: str | None = None,
+    emoji2: str | None = None,
+):
+    # Không truyền tham số nào -> hiện nút bấm mở modal nhập emoji, đúng như
+    # yêu cầu "bấm nút để mở bảng nhập thay vì gõ vào chat".
+    if emoji1 is None and emoji2 is None:
+        await interaction.response.send_message(
+            view=level.MixEmojiView(interaction.user.id),
+            ephemeral=True,
+        )
+        return
+
+    if emoji1 is None or emoji2 is None:
+        await interaction.response.send_message(
+            f"{level.ICON_CROSS} Cần nhập cả 2 emoji, hoặc để trống cả 2 để dùng nút bấm.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(thinking=True)
+    result = await emoji_mixer.find_emoji_mix_url(emoji1, emoji2)
+
+    if not result["ok"]:
+        reason = result["reason"]
+        if reason == "invalid":
+            text = (
+                f"{level.ICON_CROSS} Chỉ nhập được **1 emoji đơn** cho mỗi ô "
+                f"(không phải chuỗi emoji ghép sẵn kiểu 👨‍👩‍👧)."
+            )
+        elif reason == "network":
+            text = f"{level.ICON_WARNING} Không kết nối được để kiểm tra ảnh ghép lúc này, thử lại sau nhé!"
+        else:
+            text = (
+                f"{level.ICON_CROSS} Không tìm thấy ảnh ghép cho **{emoji1} + {emoji2}**. "
+                f"Không phải cặp emoji nào cũng có ảnh ghép, thử cặp khác xem sao!"
+            )
+        await interaction.followup.send(text)
+        return
+
+    container = discord.ui.Container(
+        discord.ui.TextDisplay(f"### 🍳 {emoji1} + {emoji2}"),
+        discord.ui.MediaGallery(discord.MediaGalleryItem(result["url"])),
+        accent_color=discord.Colour.blurple(),
+    )
+    result_view = discord.ui.LayoutView(timeout=None)
+    result_view.add_item(container)
+    await interaction.followup.send(view=result_view)
+
+
 # ==================== LỆNH /help ====================
 HELP_CATEGORIES = [
     {
@@ -640,11 +668,11 @@ HELP_CATEGORIES = [
                 "desc": f"Điểm danh nhận Deltan mỗi ngày ({level.DAILY_OPEN_HOUR:02d}:00–{level.DAILY_CLOSE_HOUR:02d}:00 giờ VN).",
                 "role": "Ai cũng dùng được",
             },
-            {"name": "game", "desc": "Chơi 7 mini game để kiếm vé, Deltan và Aura.", "role": "Ai cũng dùng được"},
+            {"name": "game", "desc": "Chơi 8 mini game (kể cả Wordle) để kiếm vé, Deltan và Aura.", "role": "Ai cũng dùng được"},
             {"name": "tặng", "desc": "Tặng Deltan của bạn cho một thành viên khác.", "role": "Ai cũng dùng được"},
             {
-                "name": "đổi-vé",
-                "desc": f"Đổi Deltan lấy vé chơi game ({level.DELTAN_PER_TICKET} Deltan / vé).",
+                "name": "deltan-shop",
+                "desc": f"Cửa hàng đổi Deltan lấy vé chơi game ({level.DELTAN_PER_TICKET} Deltan / vé).",
                 "role": "Ai cũng dùng được",
             },
         ],
@@ -653,6 +681,7 @@ HELP_CATEGORIES = [
         "title": "💬 Khác",
         "commands": [
             {"name": "thú-tội", "desc": "Gửi một lời thú tội ẩn danh vào kênh thú tội.", "role": "Ai cũng dùng được"},
+            {"name": "mix-emoji", "desc": "Ghép 2 emoji thành 1 ảnh mashup (Google Emoji Kitchen).", "role": "Ai cũng dùng được"},
         ],
     },
     {

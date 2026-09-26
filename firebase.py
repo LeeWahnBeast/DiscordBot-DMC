@@ -40,6 +40,7 @@ DEFAULT_USER = {
     "tickets_date": "",         # "YYYY-MM-DD" ngày bình vé được reset đầy gần nhất
     "daily_streak": 0,
     "last_daily_date": "",  # "YYYY-MM-DD" (ngày cuối cùng nhận daily thành công)
+    "last_game_at": 0.0,    # timestamp lượt chơi mini game gần nhất (cho cooldown 5 phút)
 }
 
 
@@ -373,16 +374,25 @@ async def get_ticket_state(guild_id: int, user_id: int, max_tickets: int, regen_
     return await _run(_get_ticket_state_sync, guild_id, user_id, max_tickets, regen_seconds, today)
 
 
-def _use_ticket_sync(guild_id: int, user_id: int, amount: int, max_tickets: int, regen_seconds: int, today: str) -> dict:
+def _use_ticket_sync(
+    guild_id: int, user_id: int, amount: int, max_tickets: int, regen_seconds: int, today: str,
+    cooldown_seconds: int = 0,
+) -> dict:
     """
     Trừ vé bằng Firebase transaction (atomic — tránh 2 request trừ vé cùng
     lúc gây trừ âm hoặc trừ 2 lần cho 1 lượt chơi). Trước khi trừ, áp dụng
-    hồi vé theo thời gian ngay trong transaction để luôn nhất quán.
-    Trả về {"ok": bool, "tickets": int, "next_regen_in": int|None}
+    hồi vé theo thời gian ngay trong transaction để luôn nhất quán. Nếu
+    cooldown_seconds > 0, còn kiểm tra luôn cooldown giữa 2 lượt chơi (dùng
+    field "last_game_at"), cũng atomic trong cùng transaction.
+    Trả về {"ok": bool, "tickets": int, "next_regen_in": int|None,
+    "reason": "cooldown"|"no_ticket"|None, "cooldown_remaining": int|None}.
     next_regen_in là số giây còn lại tới khi vé kế tiếp hồi (None nếu đã đầy bình).
     """
     ref = _user_ref(guild_id, user_id)
-    result_box = {"ok": False, "tickets": 0, "next_regen_in": None}
+    result_box = {
+        "ok": False, "tickets": 0, "next_regen_in": None,
+        "reason": None, "cooldown_remaining": None,
+    }
 
     def txn(current):
         data = dict(current) if current else dict(DEFAULT_USER)
@@ -391,25 +401,42 @@ def _use_ticket_sync(guild_id: int, user_id: int, amount: int, max_tickets: int,
 
         data = _regen_tickets(data, time.time(), max_tickets, regen_seconds, today)
 
+        now = time.time()
+        if cooldown_seconds > 0:
+            elapsed = now - data.get("last_game_at", 0.0)
+            if elapsed < cooldown_seconds:
+                result_box["ok"] = False
+                result_box["reason"] = "cooldown"
+                result_box["cooldown_remaining"] = int(cooldown_seconds - elapsed)
+                result_box["tickets"] = data["tickets"]
+                return data  # không trừ gì, không cập nhật last_game_at
+
         if data["tickets"] < amount:
             result_box["ok"] = False
+            result_box["reason"] = "no_ticket"
             result_box["tickets"] = data["tickets"]
-            remaining = regen_seconds - ((time.time() - data["tickets_last_regen"]) % regen_seconds)
+            remaining = regen_seconds - ((now - data["tickets_last_regen"]) % regen_seconds)
             result_box["next_regen_in"] = int(remaining)
             return data  # không trừ gì, nhưng vẫn lưu lại tickets đã hồi
 
         data["tickets"] -= amount
+        data["last_game_at"] = now
         result_box["ok"] = True
         result_box["tickets"] = data["tickets"]
-        result_box["next_regen_in"] = None if data["tickets"] >= max_tickets else int(regen_seconds - ((time.time() - data["tickets_last_regen"]) % regen_seconds))
+        result_box["next_regen_in"] = None if data["tickets"] >= max_tickets else int(regen_seconds - ((now - data["tickets_last_regen"]) % regen_seconds))
         return data
 
     ref.transaction(txn)
     return result_box
 
 
-async def use_ticket(guild_id: int, user_id: int, amount: int, max_tickets: int, regen_seconds: int, today: str) -> dict:
-    return await _run(_use_ticket_sync, guild_id, user_id, amount, max_tickets, regen_seconds, today)
+async def use_ticket(
+    guild_id: int, user_id: int, amount: int, max_tickets: int, regen_seconds: int, today: str,
+    cooldown_seconds: int = 0,
+) -> dict:
+    return await _run(
+        _use_ticket_sync, guild_id, user_id, amount, max_tickets, regen_seconds, today, cooldown_seconds,
+    )
 
 
 # ==================== THÚ TỘI ẨN DANH (chống trùng ID) ====================
