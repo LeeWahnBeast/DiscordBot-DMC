@@ -267,6 +267,39 @@ async def add_deltan(guild_id: int, user_id: int, amount: int) -> int:
     return await _run(_add_deltan_sync, guild_id, user_id, amount)
 
 
+def _spend_deltan_sync(guild_id: int, user_id: int, amount: int) -> dict:
+    """
+    Trừ Deltan bằng transaction trên toàn bộ user (atomic — tránh 2 lệnh /tặng
+    hoặc /đổi-vé cùng lúc gây trừ âm). Trả về {"ok": bool, "deltan": int} với
+    "deltan" là số dư SAU khi trừ (nếu ok) hoặc số dư HIỆN TẠI (nếu không đủ).
+    """
+    ref = _user_ref(guild_id, user_id)
+    result_box = {"ok": False, "deltan": 0}
+
+    def txn(current):
+        data = dict(current) if current else dict(DEFAULT_USER)
+        for k, v in DEFAULT_USER.items():
+            data.setdefault(k, v)
+
+        if data.get("deltan", 0) < amount:
+            result_box["ok"] = False
+            result_box["deltan"] = data.get("deltan", 0)
+            return data  # không trừ gì
+
+        data["deltan"] -= amount
+        result_box["ok"] = True
+        result_box["deltan"] = data["deltan"]
+        return data
+
+    ref.transaction(txn)
+    return result_box
+
+
+async def spend_deltan(guild_id: int, user_id: int, amount: int) -> dict:
+    """Trừ Deltan nếu đủ số dư (dùng cho /tặng, /đổi-vé). Xem _spend_deltan_sync."""
+    return await _run(_spend_deltan_sync, guild_id, user_id, amount)
+
+
 def _add_aura_sync(guild_id: int, user_id: int, amount: float) -> float:
     ref = _user_ref(guild_id, user_id).child("aura")
 

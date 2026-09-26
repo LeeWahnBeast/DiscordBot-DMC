@@ -29,6 +29,7 @@ ICON_ADMIN = "<:admin:1553016118430408764>"
 ICON_MOD = "<:mod:1553016085140349069>"
 ICON_CROWN = "<:vuongmien:1553254452083822692>"
 ICON_STREAK = "<:streak:1553254951709581373>"
+ICON_BADGE = "<:huyhieu:1553175460534423683>"
 
 ICON_CHECK = "<:dautich:1553019524335271996>"
 ICON_CROSS = "<:daucheo:1553019526772170762>"
@@ -65,6 +66,9 @@ DAILY_MAX_MESSAGES_BEFORE_RESEND = 30  # quá 30 tin nhắn thì gửi lại con
 GAME_TICKET_COST = 1        # số vé tốn mỗi lượt chơi bất kỳ mini game nào
 TICKETS_MAX = 5             # tối đa 5 vé (reset đầy mỗi ngày mới)
 TICKETS_REGEN_SECONDS = 3 * 60 * 60  # mỗi vé đã dùng hồi lại sau 3 tiếng
+
+DELTAN_PER_TICKET = 15      # giá quy đổi cho lệnh /đổi-vé (Deltan -> vé game)
+GIFT_MIN_DELTAN = 1         # số Deltan tối thiểu có thể tặng qua lệnh /tặng
 
 # ==================== CẤU HÌNH THÚ TỘI ẨN DANH ====================
 CONFESSION_CHANNEL_ID = 1539855082210861126
@@ -587,6 +591,27 @@ class LevelView(discord.ui.LayoutView):
                 "\n".join(lines),
                 accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
             ),
+            accent_color=discord.Colour.blurple(),
+        )
+        self.add_item(container)
+
+
+# ==================== /help ====================
+class HelpView(discord.ui.LayoutView):
+    """Danh sách lệnh + vai trò cần thiết, dùng cho lệnh /help."""
+
+    def __init__(self, categories: list[dict]):
+        super().__init__(timeout=None)
+
+        lines = [f"## {ICON_BADGE} DANH SÁCH LỆNH"]
+        for cat in categories:
+            lines.append(f"### {cat['title']}")
+            for cmd in cat["commands"]:
+                role_note = f" · *{cmd['role']}*" if cmd.get("role") else ""
+                lines.append(f"{ICON_BADGE} `/{cmd['name']}` — {cmd['desc']}{role_note}")
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
             accent_color=discord.Colour.blurple(),
         )
         self.add_item(container)

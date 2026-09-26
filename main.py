@@ -473,11 +473,210 @@ async def citizen(interaction: discord.Interaction):
     await interaction.followup.send(view=level.CitizenView(member, user_data, citizen_data, is_new))
 
 
+# ==================== LỆNH /tặng ====================
+@bot.tree.command(name="tặng", description="Tặng Deltan của bạn cho một thành viên khác trong server")
+@discord.app_commands.describe(
+    thành_viên="Người nhận Deltan",
+    số_lượng="Số Deltan muốn tặng (phải lớn hơn 0)",
+)
+async def gift_command(
+    interaction: discord.Interaction,
+    thành_viên: discord.Member,
+    số_lượng: discord.app_commands.Range[int, 1, None],
+):
+    if not interaction.guild:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    if thành_viên.id == interaction.user.id:
+        await interaction.response.send_message(f"{level.ICON_CROSS} Bạn không thể tự tặng cho chính mình!", ephemeral=True)
+        return
+    if thành_viên.bot:
+        await interaction.response.send_message(f"{level.ICON_CROSS} Không thể tặng Deltan cho bot!", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    try:
+        spend = await firebase.spend_deltan(interaction.guild.id, interaction.user.id, số_lượng)
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send(f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
+    if not spend["ok"]:
+        await interaction.followup.send(
+            f"{level.ICON_CROSS} Bạn không đủ Deltan! Hiện có **{spend['deltan']} {level.ICON_DELTAN}**, "
+            f"cần **{số_lượng} {level.ICON_DELTAN}**."
+        )
+        return
+
+    try:
+        await firebase.add_deltan(interaction.guild.id, thành_viên.id, số_lượng)
+    except firebase.FirebaseUnavailable:
+        # Đã trừ của người tặng nhưng chưa cộng được cho người nhận — hoàn lại
+        # ngay để tránh mất Deltan oan nếu Firebase chỉ lỗi thoáng qua.
+        await firebase.add_deltan(interaction.guild.id, interaction.user.id, số_lượng)
+        await interaction.followup.send(f"{level.ICON_WARNING} Có lỗi kết nối, Deltan đã được hoàn lại, thử lại sau nhé!")
+        return
+
+    await interaction.followup.send(
+        f"{level.ICON_CHECK} {interaction.user.mention} đã tặng **{số_lượng} {level.ICON_DELTAN} Deltan** "
+        f"cho {thành_viên.mention}!"
+    )
+
+
+# ==================== LỆNH /đổi-vé ====================
+@bot.tree.command(name="đổi-vé", description=f"Đổi Deltan lấy vé chơi game ({level.DELTAN_PER_TICKET} Deltan / vé)")
+@discord.app_commands.describe(số_vé="Số vé muốn đổi")
+async def exchange_tickets_command(
+    interaction: discord.Interaction,
+    số_vé: discord.app_commands.Range[int, 1, level.TICKETS_MAX],
+):
+    if not interaction.guild:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    cost = số_vé * level.DELTAN_PER_TICKET
+
+    try:
+        state = await firebase.get_ticket_state(
+            interaction.guild.id, interaction.user.id,
+            level.TICKETS_MAX, level.TICKETS_REGEN_SECONDS, level.today_str(),
+        )
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send(f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
+    if state.get("tickets", 0) + số_vé > level.TICKETS_MAX:
+        await interaction.followup.send(
+            f"{level.ICON_CROSS} Bạn chỉ được giữ tối đa **{level.TICKETS_MAX}** {level.ICON_TICKET}, "
+            f"hiện có **{state.get('tickets', 0)}**, không thể đổi thêm {số_vé} vé."
+        )
+        return
+
+    try:
+        spend = await firebase.spend_deltan(interaction.guild.id, interaction.user.id, cost)
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send(f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
+    if not spend["ok"]:
+        await interaction.followup.send(
+            f"{level.ICON_CROSS} Bạn không đủ Deltan! Cần **{cost} {level.ICON_DELTAN}**, "
+            f"hiện có **{spend['deltan']} {level.ICON_DELTAN}**."
+        )
+        return
+
+    try:
+        await firebase.add_tickets(interaction.guild.id, interaction.user.id, số_vé)
+    except firebase.FirebaseUnavailable:
+        await firebase.add_deltan(interaction.guild.id, interaction.user.id, cost)
+        await interaction.followup.send(f"{level.ICON_WARNING} Có lỗi kết nối, Deltan đã được hoàn lại, thử lại sau nhé!")
+        return
+
+    await interaction.followup.send(
+        f"{level.ICON_CHECK} Đã đổi **{cost} {level.ICON_DELTAN}** lấy **+{số_vé} {level.ICON_TICKET}**!"
+    )
+
+
+# ==================== LỆNH /chỉnh-deltan (Admin) ====================
+@bot.tree.command(name="chỉnh-deltan", description="[Admin] Cộng hoặc trừ Deltan/Aura cho 1 thành viên")
+@discord.app_commands.default_permissions(administrator=True)
+@discord.app_commands.checks.has_permissions(administrator=True)
+@discord.app_commands.describe(
+    thành_viên="Thành viên cần chỉnh",
+    loại="Chỉnh Deltan hay Aura",
+    số_lượng="Số lượng cộng thêm (dùng số âm để trừ)",
+)
+@discord.app_commands.choices(loại=[
+    discord.app_commands.Choice(name="Deltan", value="deltan"),
+    discord.app_commands.Choice(name="Aura", value="aura"),
+])
+async def admin_adjust_command(
+    interaction: discord.Interaction,
+    thành_viên: discord.Member,
+    loại: discord.app_commands.Choice[str],
+    số_lượng: float,
+):
+    if not interaction.guild:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    icon = level.ICON_DELTAN if loại.value == "deltan" else level.ICON_AURA
+    amount = int(số_lượng) if loại.value == "deltan" else round(số_lượng, 2)
+
+    try:
+        if loại.value == "deltan":
+            new_value = await firebase.add_deltan(interaction.guild.id, thành_viên.id, amount)
+        else:
+            new_value = await firebase.add_aura(interaction.guild.id, thành_viên.id, amount)
+    except firebase.FirebaseUnavailable:
+        await interaction.followup.send(f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!")
+        return
+
+    sign = "+" if amount >= 0 else ""
+    await interaction.followup.send(
+        f"{level.ICON_CHECK} Đã chỉnh **{sign}{amount} {icon}** cho {thành_viên.mention}. "
+        f"Số dư mới: **{new_value} {icon}**."
+    )
+
+
+# ==================== LỆNH /help ====================
+HELP_CATEGORIES = [
+    {
+        "title": "🪪 Công dân & Level",
+        "commands": [
+            {"name": "công-dân", "desc": "Tạo/xem hồ sơ công dân: level, XP, aura, deltan, daily streak.", "role": "Ai cũng dùng được"},
+            {"name": "level", "desc": "Xem Level, XP, Aura, Deltan, vé game của bạn (hoặc người khác).", "role": "Ai cũng dùng được"},
+            {"name": "bảng-xếp-hạng", "desc": "Top 10 theo Deltan / Level / Aura.", "role": "Ai cũng dùng được"},
+        ],
+    },
+    {
+        "title": "🎮 Kinh tế & Mini game",
+        "commands": [
+            {
+                "name": "daily",
+                "desc": f"Điểm danh nhận Deltan mỗi ngày ({level.DAILY_OPEN_HOUR:02d}:00–{level.DAILY_CLOSE_HOUR:02d}:00 giờ VN).",
+                "role": "Ai cũng dùng được",
+            },
+            {"name": "game", "desc": "Chơi 7 mini game để kiếm vé, Deltan và Aura.", "role": "Ai cũng dùng được"},
+            {"name": "tặng", "desc": "Tặng Deltan của bạn cho một thành viên khác.", "role": "Ai cũng dùng được"},
+            {
+                "name": "đổi-vé",
+                "desc": f"Đổi Deltan lấy vé chơi game ({level.DELTAN_PER_TICKET} Deltan / vé).",
+                "role": "Ai cũng dùng được",
+            },
+        ],
+    },
+    {
+        "title": "💬 Khác",
+        "commands": [
+            {"name": "thú-tội", "desc": "Gửi một lời thú tội ẩn danh vào kênh thú tội.", "role": "Ai cũng dùng được"},
+        ],
+    },
+    {
+        "title": "🛠️ Quản trị",
+        "commands": [
+            {"name": "chỉnh-deltan", "desc": "Cộng/trừ Deltan hoặc Aura cho 1 thành viên.", "role": "Chỉ Admin"},
+        ],
+    },
+]
+
+
+@bot.tree.command(name="help", description="Xem danh sách lệnh của bot và vai trò cần thiết để dùng")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.send_message(view=level.HelpView(HELP_CATEGORIES), ephemeral=True)
+
+
 # ==================== XỬ LÝ LỖI CHUNG CHO SLASH COMMAND ====================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-    log.exception(f"Lỗi khi xử lý lệnh /{interaction.command.name if interaction.command else '?'}: {error}")
-    message = "❌ Có lỗi xảy ra khi thực hiện lệnh, vui lòng thử lại sau."
+    if isinstance(error, discord.app_commands.MissingPermissions):
+        message = f"{level.ICON_CROSS} Bạn cần quyền **Administrator** để dùng lệnh này."
+    else:
+        log.exception(f"Lỗi khi xử lý lệnh /{interaction.command.name if interaction.command else '?'}: {error}")
+        message = "❌ Có lỗi xảy ra khi thực hiện lệnh, vui lòng thử lại sau."
     try:
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
