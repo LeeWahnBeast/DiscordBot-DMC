@@ -651,6 +651,52 @@ async def mix_emoji_command(
     await interaction.followup.send(view=result_view)
 
 
+# ==================== LỆNH /counter (danh mục nhảm) ====================
+@bot.tree.command(name="counter", description="[Danh mục nhảm] Bấm nút để trở thành người nhấn gần nhất")
+async def counter_command(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+        return
+
+    try:
+        state = await firebase.get_counter_state(interaction.guild.id)
+    except firebase.FirebaseUnavailable:
+        await interaction.response.send_message(
+            f"{level.ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        view=level.CounterView(state.get("count", 0), state.get("last_user_name"))
+    )
+
+
+# ==================== LỆNH /video-gần-nhất ====================
+@bot.tree.command(name="video-gần-nhất", description="Tìm và gửi video TikTok gần nhất")
+async def latest_video_command(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+
+    video = await tiktok.fetch_latest_video(TIKTOK_USERNAME)
+    if not video:
+        await interaction.followup.send(
+            f"{level.ICON_CROSS} Không tìm được video gần nhất của @{TIKTOK_USERNAME} lúc này "
+            f"(TikTok chặn/đổi cấu trúc trang, hoặc tài khoản chưa có video). Thử lại sau nhé!"
+        )
+        return
+
+    lines = [f"## 🎬 Video TikTok mới nhất — @{TIKTOK_USERNAME}"]
+    if video["desc"]:
+        lines.append(video["desc"])
+    if video.get("create_time"):
+        lines.append(f"-# Đăng lúc <t:{video['create_time']}:R>")
+    lines.append(video["url"])
+
+    # Gửi bằng content thường (không phải container) để Discord tự unfurl
+    # xem trước video TikTok từ link.
+    await interaction.followup.send("\n".join(lines))
+
+
 # ==================== LỆNH /help ====================
 HELP_CATEGORIES = [
     {
@@ -683,6 +729,17 @@ HELP_CATEGORIES = [
         "commands": [
             {"name": "thú-tội", "desc": "Gửi một lời thú tội ẩn danh vào kênh thú tội.", "role": "Ai cũng dùng được"},
             {"name": "mix-emoji", "desc": "Ghép 2 emoji thành 1 ảnh mashup (Google Emoji Kitchen).", "role": "Ai cũng dùng được"},
+            {"name": "video-gần-nhất", "desc": "Tìm và gửi video TikTok gần nhất của kênh.", "role": "Ai cũng dùng được"},
+        ],
+    },
+    {
+        "title": "🎉 Vui / Nhảm",
+        "commands": [
+            {
+                "name": "counter",
+                "desc": "Bấm nút để trở thành người nhấn gần nhất — không có ý nghĩa gì, chỉ để vui.",
+                "role": "Ai cũng dùng được",
+            },
         ],
     },
     {
@@ -754,6 +811,7 @@ async def main():
     firebase.init_firebase()
     log.info("Đã kết nối Firebase Realtime Database.")
     bot.add_view(level.DailyClaimView())  # để nút "Nhận Daily" hoạt động sau khi bot restart
+    bot.add_view(level.CounterView())  # để nút counter hoạt động sau khi bot restart
 
     # discord.py không cho start() lại trên cùng 1 bot instance sau khi nó đã
     # đóng (session bị close), nên không retry bằng cách gọi lại start() nhiều lần.

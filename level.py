@@ -307,6 +307,63 @@ class DailyClaimButton(discord.ui.Button):
         )
 
 
+# ==================== /counter (danh mục nhảm) ====================
+class CounterView(discord.ui.LayoutView):
+    """Container Components V2 hiển thị nút 'ai nhấn gần nhất', dùng cho
+    lệnh /counter (danh mục nhảm). Không có ý nghĩa thắng thua gì cả —
+    chỉ đơn giản là ai bấm cuối cùng thì được ghi tên."""
+
+    def __init__(self, count: int = 0, last_user_name: str | None = None):
+        super().__init__(timeout=None)
+
+        last_text = f"**{last_user_name}**" if last_user_name else "*chưa có ai*"
+        lines = [
+            "## 🔘 COUNTER (danh mục nhảm)",
+            f"{ICON_BULLET} Người vừa nhấn gần nhất: {last_text}",
+            f"{ICON_BULLET} Thứ **{count}**",
+            "-# Bấm nút bên dưới để trở thành người nhấn gần nhất!",
+        ]
+
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(CounterButton()),
+            accent_color=discord.Colour.orange(),
+        )
+        self.add_item(container)
+
+
+class CounterButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Nhấn vào đây!",
+            style=discord.ButtonStyle.primary,
+            emoji="🔘",
+            custom_id="counter_press_button",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
+            return
+
+        try:
+            # Dùng display_name (tên hiển thị trong server) thay vì mention,
+            # để không ping/thông báo tới người vừa bấm gần nhất.
+            state = await firebase.increment_counter(
+                interaction.guild.id, interaction.user.id, interaction.user.display_name,
+            )
+        except firebase.FirebaseUnavailable:
+            await interaction.response.send_message(
+                f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.edit_message(
+            view=CounterView(state.get("count", 0), state.get("last_user_name"))
+        )
+
+
 # ==================== VÉ GAME / MINI GAME ====================
 GAME_CHOICES = [
     "đoán số", "kéo búa bao", "xúc xắc", "wordle",
@@ -1002,23 +1059,41 @@ class DeltanShopBuyButton(discord.ui.Button):
 
 # ==================== /help ====================
 class HelpView(discord.ui.LayoutView):
-    """Danh sách lệnh + vai trò cần thiết, dùng cho lệnh /help."""
+    """Danh sách lệnh + vai trò cần thiết, dùng cho lệnh /help.
 
-    def __init__(self, categories: list[dict]):
-        super().__init__(timeout=None)
+    Hiện 1 danh mục tại 1 thời điểm, chọn danh mục qua dropdown bên dưới
+    (thay vì hiện hết tất cả lệnh cùng lúc)."""
 
-        lines = [f"## {ICON_BADGE} DANH SÁCH LỆNH"]
-        for cat in categories:
-            lines.append(f"### {cat['title']}")
-            for cmd in cat["commands"]:
-                role_note = f" · *{cmd['role']}*" if cmd.get("role") else ""
-                lines.append(f"{ICON_BULLET} `/{cmd['name']}` — {cmd['desc']}{role_note}")
+    def __init__(self, categories: list[dict], selected_index: int = 0):
+        super().__init__(timeout=180)
+        self.categories = categories
+        selected_index = max(0, min(selected_index, len(categories) - 1))
+        cat = categories[selected_index]
+
+        lines = [f"## {ICON_BADGE} DANH SÁCH LỆNH", f"### {cat['title']}"]
+        for cmd in cat["commands"]:
+            role_note = f" · *{cmd['role']}*" if cmd.get("role") else ""
+            lines.append(f"{ICON_BULLET} `/{cmd['name']}` — {cmd['desc']}{role_note}")
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(HelpCategorySelect(categories, selected_index)),
             accent_color=discord.Colour.blurple(),
         )
         self.add_item(container)
+
+
+class HelpCategorySelect(discord.ui.Select):
+    def __init__(self, categories: list[dict], selected_index: int):
+        options = [
+            discord.SelectOption(label=cat["title"], value=str(i), default=(i == selected_index))
+            for i, cat in enumerate(categories)
+        ]
+        super().__init__(placeholder="Chọn danh mục lệnh để xem...", options=options, min_values=1, max_values=1)
+        self.categories = categories
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(view=HelpView(self.categories, int(self.values[0])))
 
 
 # ==================== BẢNG XẾP HẠNG ====================
@@ -1123,25 +1198,28 @@ class GameSelectView(discord.ui.LayoutView):
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
-            discord.ui.ActionRow(*[
-                GameCategoryButton(owner_id, tickets, cat["key"], cat["title"], cat["emoji"])
-                for cat in GAME_CATEGORIES
-            ]),
+            discord.ui.ActionRow(GameCategorySelect(owner_id, tickets)),
             accent_color=discord.Colour.blurple(),
         )
         self.add_item(container)
 
 
-class GameCategoryButton(discord.ui.Button):
-    def __init__(self, owner_id: int, tickets: int, category_key: str, label: str, emoji: str):
-        super().__init__(label=label, style=discord.ButtonStyle.primary, emoji=emoji)
-        self.owner_id, self.tickets, self.category_key = owner_id, tickets, category_key
+class GameCategorySelect(discord.ui.Select):
+    def __init__(self, owner_id: int, tickets: int):
+        options = [
+            discord.SelectOption(
+                label=cat["title"], value=cat["key"], emoji=cat["emoji"], description=cat["desc"][:100],
+            )
+            for cat in GAME_CATEGORIES
+        ]
+        super().__init__(placeholder="Chọn danh mục để xem các game...", options=options, min_values=1, max_values=1)
+        self.owner_id, self.tickets = owner_id, tickets
 
     async def callback(self, interaction: discord.Interaction):
         if await _reject_if_not_owner(interaction, self.owner_id):
             return
         await interaction.response.edit_message(
-            view=GameCategoryGamesView(self.owner_id, self.tickets, self.category_key)
+            view=GameCategoryGamesView(self.owner_id, self.tickets, self.values[0])
         )
 
 
@@ -1159,19 +1237,11 @@ class GameCategoryGamesView(discord.ui.LayoutView):
         ]
         for info in games:
             lines.append(f"{info['emoji']} **{info['title']}** — {info['desc']}")
-        lines.append("-# Chọn một trò chơi bên dưới:")
-
-        rows = [
-            discord.ui.ActionRow(*[
-                GameChoiceButton(owner_id, info["key"], info["title"], info["emoji"])
-                for info in chunk
-            ])
-            for chunk in (games[i:i + 4] for i in range(0, len(games), 4))
-        ]
+        lines.append("-# Chọn một trò chơi trong danh sách bên dưới:")
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
-            *rows,
+            discord.ui.ActionRow(GameChoiceSelect(owner_id, games)),
             discord.ui.ActionRow(GameBackButton(owner_id, tickets)),
             accent_color=discord.Colour.blurple(),
         )
@@ -1200,58 +1270,67 @@ async def _reject_if_not_owner(interaction: discord.Interaction, owner_id: int) 
     return False
 
 
-class GameChoiceButton(discord.ui.Button):
-    def __init__(self, owner_id: int, game_key: str, label: str, emoji: str):
-        super().__init__(label=label, style=discord.ButtonStyle.primary, emoji=emoji)
+class GameChoiceSelect(discord.ui.Select):
+    def __init__(self, owner_id: int, games: list[dict]):
+        options = [
+            discord.SelectOption(
+                label=info["title"], value=info["key"], emoji=info["emoji"], description=info["desc"][:100],
+            )
+            for info in games
+        ]
+        super().__init__(placeholder="Chọn một trò chơi để bắt đầu...", options=options, min_values=1, max_values=1)
         self.owner_id = owner_id
-        self.game_key = game_key
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
             return
         if await _reject_if_not_owner(interaction, self.owner_id):
             return
+        await _launch_game(interaction, self.values[0])
 
-        if self.game_key == "guess":
-            await interaction.response.send_message(
-                view=GuessNumberView(interaction.guild.id, interaction.user.id),
-                ephemeral=True,
-            )
-        elif self.game_key == "rps":
-            await interaction.response.send_message(
-                view=RPSView(interaction.guild.id, interaction.user.id),
-                ephemeral=True,
-            )
-        elif self.game_key == "dice":
-            await interaction.response.send_message(
-                view=DiceView(interaction.guild.id, interaction.user.id),
-                ephemeral=True,
-            )
-        elif self.game_key == "wordle":
-            await interaction.response.send_message(
-                view=WordleModeView(interaction.guild.id, interaction.user.id),
-                ephemeral=True,
-            )
-        elif self.game_key == "mathquiz":
-            await interaction.response.send_message(
-                view=MathQuizView(interaction.guild.id, interaction.user.id),
-                ephemeral=True,
-            )
-        elif self.game_key == "memory":
-            await interaction.response.send_message(
-                view=MemoryGameView(interaction.guild.id, interaction.user.id),
-                ephemeral=True,
-            )
-        elif self.game_key in QUIZ_GAME_CONFIG:
-            await interaction.response.send_message(
-                view=QuizGameView(interaction.guild.id, interaction.user.id, self.game_key),
-                ephemeral=True,
-            )
-        elif self.game_key in GAME_DEFS:
-            await interaction.response.send_message(
-                view=NewGameView(interaction.guild.id, interaction.user.id, self.game_key),
-                ephemeral=True,
-            )
+
+async def _launch_game(interaction: discord.Interaction, game_key: str):
+    """Mở view chơi tương ứng với game_key đã chọn (ephemeral, riêng cho người chơi)."""
+    if game_key == "guess":
+        await interaction.response.send_message(
+            view=GuessNumberView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
+    elif game_key == "rps":
+        await interaction.response.send_message(
+            view=RPSView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
+    elif game_key == "dice":
+        await interaction.response.send_message(
+            view=DiceView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
+    elif game_key == "wordle":
+        await interaction.response.send_message(
+            view=WordleModeView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
+    elif game_key == "mathquiz":
+        await interaction.response.send_message(
+            view=MathQuizView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
+    elif game_key == "memory":
+        await interaction.response.send_message(
+            view=MemoryGameView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
+    elif game_key in QUIZ_GAME_CONFIG:
+        await interaction.response.send_message(
+            view=QuizGameView(interaction.guild.id, interaction.user.id, game_key),
+            ephemeral=True,
+        )
+    elif game_key in GAME_DEFS:
+        await interaction.response.send_message(
+            view=NewGameView(interaction.guild.id, interaction.user.id, game_key),
+            ephemeral=True,
+        )
 
 
 async def _spend_ticket_or_none(guild_id: int, user_id: int) -> dict:

@@ -514,3 +514,35 @@ def _save_tiktok_sync_state_sync(data: dict):
 
 async def save_tiktok_sync_state(data: dict):
     await _run(_save_tiktok_sync_state_sync, data)
+
+
+# ==================== /counter (danh mục nhảm) ====================
+def _counter_state_ref(guild_id: int):
+    return db.reference(f"/counter_state/{guild_id}")
+
+
+def _get_counter_state_sync(guild_id: int) -> dict:
+    return _counter_state_ref(guild_id).get() or {}
+
+
+async def get_counter_state(guild_id: int) -> dict:
+    """Trả về {"count": int, "last_user_id": int, "last_user_name": str} (dict rỗng nếu chưa ai bấm)."""
+    return await _run(_get_counter_state_sync, guild_id)
+
+
+def _increment_counter_sync(guild_id: int, user_id: int, user_name: str) -> dict:
+    ref = _counter_state_ref(guild_id)
+
+    def txn(current):
+        count = ((current or {}).get("count") or 0) + 1
+        return {"count": count, "last_user_id": user_id, "last_user_name": user_name}
+
+    result = ref.transaction(txn)
+    if isinstance(result, dict):
+        return result
+    return {"count": 1, "last_user_id": user_id, "last_user_name": user_name}
+
+
+async def increment_counter(guild_id: int, user_id: int, user_name: str) -> dict:
+    """Tăng counter thêm 1 (atomic) và lưu ai vừa bấm gần nhất."""
+    return await _run(_increment_counter_sync, guild_id, user_id, user_name)
