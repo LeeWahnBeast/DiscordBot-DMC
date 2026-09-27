@@ -14,6 +14,7 @@ dùng HEAD request để kiểm tra ảnh có tồn tại không.
 """
 
 import io
+import asyncio
 import logging
 
 import aiohttp
@@ -77,20 +78,28 @@ async def find_emoji_mix_url(emoji1: str, emoji2: str) -> dict:
         if left_cp != right_cp:
             candidates.append(_build_url(date, right_cp, left_cp))
 
+    async def _check(session: aiohttp.ClientSession, url: str) -> str | None:
+        try:
+            async with session.head(
+                url, timeout=aiohttp.ClientTimeout(total=6), allow_redirects=True
+            ) as resp:
+                return url if resp.status == 200 else None
+        except Exception:
+            return None
+
     try:
         async with aiohttp.ClientSession() as session:
-            for url in candidates:
-                try:
-                    async with session.head(
-                        url, timeout=aiohttp.ClientTimeout(total=6), allow_redirects=True
-                    ) as resp:
-                        if resp.status == 200:
-                            return {"ok": True, "url": url}
-                except Exception:
-                    continue
+            # Kiểm tra tất cả URL ứng viên song song (thay vì tuần tự từng cái
+            # một) — nhanh hơn nhiều lần, quan trọng vì AI Chat cần phản hồi lẹ.
+            results = await asyncio.gather(*(_check(session, url) for url in candidates))
     except Exception:
         log.exception(f"Lỗi mạng khi kiểm tra emoji mix: {emoji1} + {emoji2}")
         return {"ok": False, "reason": "network"}
+
+    # Giữ đúng thứ tự ưu tiên KNOWN_DATES (mới nhất trước) dù chạy song song.
+    for url in candidates:
+        if url in results:
+            return {"ok": True, "url": url}
 
     return {"ok": False, "reason": "not_found"}
 

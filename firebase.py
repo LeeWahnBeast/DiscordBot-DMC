@@ -516,6 +516,29 @@ async def save_tiktok_sync_state(data: dict):
     await _run(_save_tiktok_sync_state_sync, data)
 
 
+# ==================== AI CHAT — TRẠNG THÁI HẾT QUOTA GROQ ====================
+def _ai_quota_state_ref():
+    return db.reference("/ai_quota_state")
+
+
+def _get_ai_quota_state_sync() -> dict:
+    return _ai_quota_state_ref().get() or {}
+
+
+async def get_ai_quota_state() -> dict:
+    """Trả về {"exhausted": bool, "last_error_at": float, "last_error_body": str}
+    (dict rỗng nếu chưa từng ghi nhận lỗi hết quota nào)."""
+    return await _run(_get_ai_quota_state_sync)
+
+
+def _save_ai_quota_state_sync(data: dict):
+    _ai_quota_state_ref().set(data)
+
+
+async def save_ai_quota_state(data: dict):
+    await _run(_save_ai_quota_state_sync, data)
+
+
 # ==================== /counter (danh mục nhảm) ====================
 def _counter_state_ref(guild_id: int):
     return db.reference(f"/counter_state/{guild_id}")
