@@ -47,6 +47,9 @@ ICON_CROSS = "<:daucheo:1553019526772170762>"
 ICON_WARNING = "<:warning:1553019521164509264>"
 ICON_TICKET = "<:ticket:1553020189589774336>"
 
+ICON_FAKECUOI = "<:fakecuoi:1553653257535103036>"
+FAKECUOI_X3 = ICON_FAKECUOI * 3  # gắn vào cuối các câu báo "sai" trong phần trò chơi
+
 # ==================== CẤU HÌNH XP ====================
 MESSAGE_XP_MIN, MESSAGE_XP_MAX = 15, 25
 MESSAGE_XP_COOLDOWN = 60  # giây
@@ -1418,7 +1421,7 @@ class GuessNumberButton(discord.ui.Button):
                 f"Bạn nhận lại +1 {ICON_TICKET} và +{GUESS_NUMBER_DELTAN_REWARD} {ICON_DELTAN}!"
             )
         else:
-            text = f"{ICON_CROSS} Sai rồi! Số bí mật là **{result['secret']}**."
+            text = f"{ICON_CROSS} Sai rồi! Số bí mật là **{result['secret']}**. {FAKECUOI_X3}"
         await interaction.edit_original_response(view=GameResultView(text))
 
 
@@ -1536,7 +1539,7 @@ class DiceButton(discord.ui.Button):
                 f"nhận lại +1 {ICON_TICKET} và +{DICE_DELTAN_REWARD} {ICON_DELTAN}!"
             )
         else:
-            text = f"{ICON_CROSS} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán sai."
+            text = f"{ICON_CROSS} Xúc xắc ra **{result['roll']}** ({result['actual']})! Bạn đoán sai. {FAKECUOI_X3}"
         await interaction.edit_original_response(view=GameResultView(text))
 
 
@@ -1609,7 +1612,7 @@ class NewGameButton(discord.ui.Button):
                 await firebase.add_aura(self.guild_id, self.user_id, -cfg["aura_reward"])
                 text = (
                     f"{ICON_CROSS} Sai rồi! Kết quả: {result['actual_label']}.\n"
-                    f"Bạn bị trừ **-{cfg['aura_reward']} {ICON_AURA}**."
+                    f"Bạn bị trừ **-{cfg['aura_reward']} {ICON_AURA}**. {FAKECUOI_X3}"
                 )
         except firebase.FirebaseUnavailable:
             # Vé đã bị trừ nhưng không cộng/trừ được Deltan/Aura — báo lỗi rõ ràng
@@ -1694,7 +1697,7 @@ class MathQuizModal(discord.ui.Modal):
                 text = (
                     f"{ICON_CROSS} Sai rồi {wrong_note}! Đáp án đúng: "
                     f"**{self.question['question']} = {self.question['answer']}**.\n"
-                    f"Bạn bị trừ **-{MATH_QUIZ_AURA_REWARD} {ICON_AURA}**."
+                    f"Bạn bị trừ **-{MATH_QUIZ_AURA_REWARD} {ICON_AURA}**. {FAKECUOI_X3}"
                 )
         except firebase.FirebaseUnavailable:
             text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
@@ -1832,7 +1835,7 @@ class MemoryDigitButton(discord.ui.Button):
             seq_text = " ".join(f"`{n}`" for n in self.sequence)
             text = (
                 f"{ICON_CROSS} Sai rồi! Dãy đúng là: {seq_text}.\n"
-                f"Bạn bị trừ **-{MEMORY_AURA_REWARD} {ICON_AURA}**."
+                f"Bạn bị trừ **-{MEMORY_AURA_REWARD} {ICON_AURA}**. {FAKECUOI_X3}"
             )
             await interaction.edit_original_response(view=GameResultView(text))
             return
@@ -1966,7 +1969,7 @@ class QuizOptionButton(discord.ui.Button):
                 await firebase.add_aura(self.guild_id, self.user_id, -QUIZ_AURA_REWARD)
                 text = (
                     f"{ICON_CROSS} Sai rồi! Đáp án đúng là **{self.question['correct']}**.\n"
-                    f"Bạn bị trừ **-{QUIZ_AURA_REWARD} {ICON_AURA}**."
+                    f"Bạn bị trừ **-{QUIZ_AURA_REWARD} {ICON_AURA}**. {FAKECUOI_X3}"
                 )
         except firebase.FirebaseUnavailable:
             text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
@@ -2425,7 +2428,7 @@ class WordleGuessModal(discord.ui.Modal):
                     await firebase.add_aura(state.guild_id, state.user_id, -WORDLE_AURA_REWARD)
                     lines.append(
                         f"\n{ICON_CROSS} Hết lượt! Từ bí mật là **{state.secret.upper()}**. "
-                        f"Bạn bị trừ **-{WORDLE_AURA_REWARD} {ICON_AURA}**."
+                        f"Bạn bị trừ **-{WORDLE_AURA_REWARD} {ICON_AURA}**. {FAKECUOI_X3}"
                     )
             except firebase.FirebaseUnavailable:
                 lines.append(

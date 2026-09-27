@@ -4,7 +4,6 @@ Xem README.md để biết cách setup Discord Bot + Firebase + deploy Render.
 """
 
 import os
-import io
 import time
 import asyncio
 import logging
@@ -18,7 +17,6 @@ import emoji_mixer
 import firebase
 import level
 import tiktok
-import ai_chat
 from keepalive import keep_alive
 
 load_dotenv()
@@ -51,10 +49,6 @@ intents.presences = True  # cần để đọc trạng thái online/offline + ri
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 _message_cooldowns: dict[tuple[int, int], float] = {}
-
-# ==================== AI CHAT (tag bot để chat, dùng Groq) ====================
-AI_CHAT_MAX_HISTORY_USERS = 500  # giới hạn số user giữ lịch sử hội thoại cùng lúc
-_ai_chat_history: dict[int, list[dict]] = {}  # user_id -> [{"role","content"}, ...] (mất khi bot restart)
 
 
 # ==================== XP KHI NHẮN TIN ====================
@@ -89,96 +83,6 @@ async def on_message(message: discord.Message):
             await message.channel.send(view=level.LevelUpView(message.author, result))
         except discord.HTTPException:
             log.warning(f"Không gửi được thông báo lên level trong #{message.channel} (HTTP lỗi).")
-
-    # Tag bot -> chat với AI (Groq). Đặt cuối cùng để không ảnh hưởng XP/daily ở trên.
-    if bot.user in message.mentions:
-        await _handle_ai_chat(message)
-
-
-async def _handle_ai_chat(message: discord.Message):
-    """Xử lý khi có người @tag bot: gọi Groq, trả lời cộc lốc kiểu gen Z.
-    Không giới hạn cooldown riêng cho AI Chat (đã bỏ theo yêu cầu)."""
-    log.info(f"AI Chat được gọi bởi {message.author.id} trong #{message.channel}: {message.content!r}")
-
-    # Bỏ phần "@TênBot" ra khỏi nội dung, chỉ giữ câu hỏi thật sự.
-    text = message.content
-    for mention in message.mentions:
-        text = text.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
-    text = text.strip()
-    if not text:
-        text = "chào"
-
-    # Giới hạn số user giữ lịch sử cùng lúc, tránh phình bộ nhớ vô hạn.
-    if len(_ai_chat_history) > AI_CHAT_MAX_HISTORY_USERS and message.author.id not in _ai_chat_history:
-        _ai_chat_history.pop(next(iter(_ai_chat_history)), None)
-    history = _ai_chat_history.get(message.author.id, [])
-
-    try:
-        async with message.channel.typing():
-            result = await ai_chat.ask_ai(text, history)
-    except discord.HTTPException:
-        # Không hiện được "đang gõ..." (thiếu quyền chẳng hạn) -> vẫn hỏi AI bình thường.
-        result = await ai_chat.ask_ai(text, history)
-    except ai_chat.AllProvidersExhausted as e:
-        # TẤT CẢ provider (Groq, OpenRouter...) đã cấu hình đều hết quota/rate
-        # limit -> báo người dùng xin nạp thêm token, đồng thời lưu trạng thái
-        # này vào Firebase để dễ theo dõi/tra sau.
-        log.warning(f"Mọi provider AI Chat đều hết quota: {e}")
-        try:
-            await firebase.save_ai_quota_state({
-                "exhausted": True,
-                "last_error_at": time.time(),
-                "last_error_body": str(e),
-            })
-        except firebase.FirebaseUnavailable:
-            log.warning("Không lưu được trạng thái hết quota AI Chat vào Firebase (Firebase lỗi).")
-        try:
-            await message.reply(
-                f"{level.ICON_WARNING} AI hết token dùng rồi ({e}), ai đó nạp thêm token vào đi mới chat tiếp được 🙏",
-                mention_author=False,
-            )
-        except discord.HTTPException:
-            log.warning("Không gửi được thông báo hết quota AI Chat (HTTP lỗi).")
-        return
-
-    if not result:
-        try:
-            await message.reply(
-                f"{level.ICON_WARNING} AI lag/lỗi rồi, tí quay lại hỏi tiếp nhé.",
-                mention_author=False,
-            )
-        except discord.HTTPException:
-            log.warning("Không gửi được thông báo lỗi AI Chat (HTTP lỗi).")
-        return
-
-    reply, mix_pair = result
-
-    history.append({"role": "user", "content": text})
-    history.append({"role": "assistant", "content": reply})
-    _ai_chat_history[message.author.id] = history[-(ai_chat.MAX_HISTORY_TURNS * 2):]
-
-    # Nếu AI chèn marker [[mix:...]], thử lấy ảnh mashup Emoji Kitchen để gửi
-    # kèm. Lỗi ở bước này (không tìm thấy ảnh, mạng lỗi...) không được chặn
-    # câu trả lời text chính — luôn có fallback gửi text không kèm ảnh.
-    mix_file = None
-    if mix_pair:
-        try:
-            mix_result = await emoji_mixer.find_emoji_mix_url(mix_pair[0], mix_pair[1])
-            if mix_result["ok"]:
-                image_bytes = await emoji_mixer.download_resized(mix_result["url"], size=48)
-                if image_bytes:
-                    mix_file = discord.File(io.BytesIO(image_bytes), filename="mix.png")
-        except Exception:
-            log.exception(f"Lỗi khi tạo ảnh mix emoji cho AI Chat: {mix_pair}")
-            mix_file = None
-
-    try:
-        if mix_file:
-            await message.reply(reply or "\u200b", file=mix_file, mention_author=False)
-        else:
-            await message.reply(reply, mention_author=False)
-    except discord.HTTPException:
-        log.warning("Không gửi được câu trả lời AI Chat (HTTP lỗi).")
 
 
 @tasks.loop(seconds=COOLDOWN_CLEANUP_INTERVAL_SECONDS)
@@ -535,15 +439,24 @@ async def ensure_citizen_role(guild: discord.Guild):
     return role
 
 
-@bot.tree.command(name="công-dân", description="Tạo hoặc xem hồ sơ công dân của bạn trong server")
-async def citizen(interaction: discord.Interaction):
+@bot.tree.command(name="công-dân", description="Tạo hoặc xem hồ sơ công dân của bạn (hoặc người khác) trong server")
+@discord.app_commands.describe(thành_viên="Xem hồ sơ của thành viên khác (bỏ trống để xem/tạo của chính bạn)")
+async def citizen(interaction: discord.Interaction, thành_viên: discord.Member | None = None):
     if not interaction.guild:
         await interaction.response.send_message("Lệnh này chỉ dùng được trong server.", ephemeral=True)
         return
 
     await interaction.response.defer(thinking=True)
     guild = interaction.guild
-    member = interaction.user
+    is_self = thành_viên is None or thành_viên.id == interaction.user.id
+    target = thành_viên or interaction.user
+
+    # Luôn lấy lại từ cache của guild (nếu có) thay vì dùng thẳng object được
+    # Discord resolve trong lệnh slash: object resolve từ interaction không
+    # mang theo presence (status online/offline, activity...), trong khi
+    # member lấy từ cache guild thì có (nhờ intents.members + intents.presences
+    # bật ở trên) -> đây là lý do xem status trong /công-dân trước đây bị sai/lỗi.
+    member = guild.get_member(target.id) or target
 
     try:
         user_data = await firebase.get_user(guild.id, member.id)
@@ -555,6 +468,14 @@ async def citizen(interaction: discord.Interaction):
     is_new = not citizen_data
 
     if is_new:
+        if not is_self:
+            # Không tự tạo hồ sơ giùm người khác, chỉ báo là họ chưa có.
+            await interaction.followup.send(
+                f"{level.ICON_WARNING} {member.mention} chưa có hồ sơ công dân. "
+                f"Bảo họ tự dùng lệnh `/công-dân` để tạo nhé!"
+            )
+            return
+
         try:
             await firebase.create_citizen(guild.id, member.id, level.generate_citizen_id())
             citizen_data = await firebase.get_citizen(guild.id, member.id)
@@ -774,7 +695,7 @@ HELP_CATEGORIES = [
     {
         "title": "🪪 Công dân & Level",
         "commands": [
-            {"name": "công-dân", "desc": "Tạo/xem hồ sơ công dân: level, XP, aura, deltan, daily streak.", "role": "Ai cũng dùng được"},
+            {"name": "công-dân", "desc": "Tạo/xem hồ sơ công dân: level, XP, aura, deltan, daily streak, status Discord (của bạn hoặc người khác).", "role": "Ai cũng dùng được"},
             {"name": "level", "desc": "Xem Level, XP, Aura, Deltan, vé game của bạn (hoặc người khác).", "role": "Ai cũng dùng được"},
             {"name": "bảng-xếp-hạng", "desc": "Top 10 theo Deltan / Level / Aura.", "role": "Ai cũng dùng được"},
         ],
@@ -809,11 +730,6 @@ HELP_CATEGORIES = [
             {
                 "name": "counter",
                 "desc": "Bấm nút để trở thành người nhấn gần nhất — không có ý nghĩa gì, chỉ để vui.",
-                "role": "Ai cũng dùng được",
-            },
-            {
-                "name": "@tag bot",
-                "desc": "Chat với AI (Groq) — trả lời cộc lốc kiểu gen Z, thỉnh thoảng spam emoji cho vui.",
                 "role": "Ai cũng dùng được",
             },
         ],
