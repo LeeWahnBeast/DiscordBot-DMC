@@ -115,14 +115,15 @@ async def _handle_ai_chat(message: discord.Message):
 
     try:
         async with message.channel.typing():
-            result = await ai_chat.ask_groq(text, history)
+            result = await ai_chat.ask_ai(text, history)
     except discord.HTTPException:
         # Không hiện được "đang gõ..." (thiếu quyền chẳng hạn) -> vẫn hỏi AI bình thường.
-        result = await ai_chat.ask_groq(text, history)
-    except ai_chat.GroqQuotaExhausted as e:
-        # Groq hết quota/rate limit -> báo người dùng xin nạp thêm token,
-        # đồng thời lưu trạng thái này vào Firebase để dễ theo dõi/tra sau.
-        log.warning(f"Groq hết quota: {e}")
+        result = await ai_chat.ask_ai(text, history)
+    except ai_chat.AllProvidersExhausted as e:
+        # TẤT CẢ provider (Groq, OpenRouter...) đã cấu hình đều hết quota/rate
+        # limit -> báo người dùng xin nạp thêm token, đồng thời lưu trạng thái
+        # này vào Firebase để dễ theo dõi/tra sau.
+        log.warning(f"Mọi provider AI Chat đều hết quota: {e}")
         try:
             await firebase.save_ai_quota_state({
                 "exhausted": True,
@@ -133,7 +134,7 @@ async def _handle_ai_chat(message: discord.Message):
             log.warning("Không lưu được trạng thái hết quota AI Chat vào Firebase (Firebase lỗi).")
         try:
             await message.reply(
-                f"{level.ICON_WARNING} AI hết token dùng rồi, ai đó nạp thêm Groq token vào đi mới chat tiếp được 🙏",
+                f"{level.ICON_WARNING} AI hết token dùng rồi ({e}), ai đó nạp thêm token vào đi mới chat tiếp được 🙏",
                 mention_author=False,
             )
         except discord.HTTPException:
