@@ -3,10 +3,12 @@ Logic XP / Level / Aura / Deltan + giao diện Components V2 (LevelUp, Hồ sơ 
 Bảng xếp hạng, Thú tội ẩn danh).
 """
 
+import re
 import time
 import random
 import string
 import datetime
+import unicodedata
 
 import discord
 
@@ -401,7 +403,7 @@ GAME_LIST_INFO = [
     {"key": "memory", "emoji": "🧩", "title": "Trí Nhớ", "type": "🧠 Trí tuệ", "category": "logic",
      "desc": "Ghi nhớ và bấm lại đúng thứ tự dãy số vừa hiện ra."},
     {"key": "flag", "emoji": "🚩", "title": "Đoán Cờ", "type": "🧠 Trí tuệ", "category": "knowledge",
-     "desc": "Nhìn lá cờ, chọn đúng tên quốc gia trong 4 lựa chọn."},
+     "desc": "Nhìn lá cờ, gõ đúng tên quốc gia trong 5 lượt đoán."},
     {"key": "country", "emoji": "🌍", "title": "Đoán Quốc Gia", "type": "🧠 Trí tuệ", "category": "knowledge",
      "desc": "Đọc gợi ý (thủ đô, đặc điểm nổi bật...) rồi đoán đúng quốc gia."},
     {"key": "culture", "emoji": "🎎", "title": "Đoán Văn Hoá", "type": "🧠 Trí tuệ", "category": "knowledge",
@@ -618,29 +620,8 @@ def generate_memory_sequence(length: int = MEMORY_SEQUENCE_LENGTH) -> list[int]:
 QUIZ_DELTAN_REWARD = 5
 QUIZ_AURA_REWARD = 1.5
 
-# Mỗi mục: (emoji/hiển thị, đáp án đúng, list đáp án gây nhiễu)
-FLAG_QUESTIONS = [
-    ("🇻🇳", "Việt Nam", ["Trung Quốc", "Lào", "Campuchia"]),
-    ("🇯🇵", "Nhật Bản", ["Hàn Quốc", "Trung Quốc", "Thái Lan"]),
-    ("🇰🇷", "Hàn Quốc", ["Nhật Bản", "Triều Tiên", "Mông Cổ"]),
-    ("🇺🇸", "Mỹ (Hoa Kỳ)", ["Anh", "Canada", "Úc"]),
-    ("🇬🇧", "Anh", ["Mỹ (Hoa Kỳ)", "Pháp", "Úc"]),
-    ("🇫🇷", "Pháp", ["Ý", "Hà Lan", "Đức"]),
-    ("🇩🇪", "Đức", ["Bỉ", "Áo", "Ba Lan"]),
-    ("🇮🇹", "Ý", ["Pháp", "Mexico", "Ireland"]),
-    ("🇪🇸", "Tây Ban Nha", ["Bồ Đào Nha", "Mexico", "Colombia"]),
-    ("🇧🇷", "Brazil", ["Bồ Đào Nha", "Argentina", "Colombia"]),
-    ("🇨🇳", "Trung Quốc", ["Việt Nam", "Đài Loan", "Singapore"]),
-    ("🇹🇭", "Thái Lan", ["Lào", "Campuchia", "Myanmar"]),
-    ("🇮🇳", "Ấn Độ", ["Pakistan", "Bangladesh", "Sri Lanka"]),
-    ("🇷🇺", "Nga", ["Serbia", "Slovenia", "Ukraina"]),
-    ("🇨🇦", "Canada", ["Mỹ (Hoa Kỳ)", "Anh", "Úc"]),
-    ("🇦🇺", "Úc", ["New Zealand", "Anh", "Mỹ (Hoa Kỳ)"]),
-    ("🇲🇽", "Mexico", ["Ý", "Tây Ban Nha", "Bồ Đào Nha"]),
-    ("🇪🇬", "Ai Cập", ["Jordan", "UAE", "Ả Rập Xê Út"]),
-    ("🇿🇦", "Nam Phi", ["Kenya", "Nigeria", "Ghana"]),
-    ("🇸🇬", "Singapore", ["Malaysia", "Indonesia", "Trung Quốc"]),
-]
+# Lưu ý: "Đoán Cờ" không còn dùng cơ chế trắc nghiệm 4 lựa chọn ở trên —
+# xem phần "ĐOÁN CỜ (gõ đáp án tự do, 5 lượt)" phía dưới file.
 
 COUNTRY_QUESTIONS = [
     ("Thủ đô là Hà Nội, nổi tiếng với phở và áo dài.", "Việt Nam", ["Thái Lan", "Lào", "Campuchia"]),
@@ -1321,6 +1302,11 @@ async def _launch_game(interaction: discord.Interaction, game_key: str):
             view=MemoryGameView(interaction.guild.id, interaction.user.id),
             ephemeral=True,
         )
+    elif game_key == "flag":
+        await interaction.response.send_message(
+            view=FlagIntroView(interaction.guild.id, interaction.user.id),
+            ephemeral=True,
+        )
     elif game_key in QUIZ_GAME_CONFIG:
         await interaction.response.send_message(
             view=QuizGameView(interaction.guild.id, interaction.user.id, game_key),
@@ -1870,9 +1856,9 @@ class MemoryDigitButton(discord.ui.Button):
         )
 
 
-# ==================== 5 GAME TRẮC NGHIỆM (Cờ/Quốc gia/Văn hoá/Ứng dụng/Truyền thống) ====================
+# ==================== 4 GAME TRẮC NGHIỆM (Quốc gia/Văn hoá/Ứng dụng/Truyền thống) ====================
+# "Đoán Cờ" có cơ chế riêng (gõ đáp án tự do, 5 lượt) — xem phần bên dưới.
 QUIZ_GAME_CONFIG = {
-    "flag": {"title": "🚩 Đoán Cờ", "pool": FLAG_QUESTIONS, "prompt_label": "Lá cờ này là của quốc gia nào?", "big_prompt": True},
     "country": {"title": "🌍 Đoán Quốc Gia", "pool": COUNTRY_QUESTIONS, "prompt_label": "Đoán quốc gia qua gợi ý:", "big_prompt": False},
     "culture": {"title": "🎎 Đoán Văn Hoá", "pool": CULTURE_QUESTIONS, "prompt_label": "Nét văn hoá này thuộc về đâu?", "big_prompt": False},
     "app": {"title": "📱 Đoán Ứng Dụng", "pool": APP_QUESTIONS, "prompt_label": "Đây là ứng dụng nào?", "big_prompt": False},
@@ -1984,6 +1970,293 @@ class QuizOptionButton(discord.ui.Button):
             text = f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng/trừ được Deltan/Aura do lỗi kết nối. Vé đã bị trừ, báo admin nếu cần hoàn lại."
 
         await interaction.edit_original_response(view=GameResultView(text))
+
+
+# ==================== ĐOÁN CỜ (gõ đáp án tự do, 5 lượt) ====================
+FLAG_MAX_GUESSES = 5
+FLAG_DELTAN_REWARD = 8
+FLAG_AURA_REWARD = 2.5
+
+ICON_CUOI_CHAY_NUOC_MAT = "<:cuoichaynuocmat:1553559977421967420>"
+ICON_VERITY_OM_DUNG = "<:verityomdung:1553561765361483906>"
+
+FLAG_CONTINENTS = {
+    "asia": "Châu Á",
+    "europe": "Châu Âu",
+    "africa": "Châu Phi",
+    "americas": "Châu Mỹ",
+    "oceania": "Châu Đại Dương",
+}
+
+# Mỗi mục: (emoji lá cờ, tên hiển thị, continent_key, list alias để gõ đúng
+# cũng được chấp nhận — không cần gõ y hệt tên hiển thị/không cần bỏ dấu).
+# 15 nước / châu lục.
+FLAG_COUNTRIES = [
+    # ---- Châu Á ----
+    ("🇻🇳", "Việt Nam", "asia", ["vietnam"]),
+    ("🇯🇵", "Nhật Bản", "asia", ["nhat", "japan"]),
+    ("🇰🇷", "Hàn Quốc", "asia", ["han quoc", "korea", "south korea"]),
+    ("🇨🇳", "Trung Quốc", "asia", ["trung quoc", "china"]),
+    ("🇹🇭", "Thái Lan", "asia", ["thai lan", "thailand"]),
+    ("🇮🇳", "Ấn Độ", "asia", ["an do", "india"]),
+    ("🇸🇬", "Singapore", "asia", []),
+    ("🇲🇾", "Malaysia", "asia", []),
+    ("🇮🇩", "Indonesia", "asia", []),
+    ("🇵🇭", "Philippines", "asia", []),
+    ("🇱🇦", "Lào", "asia", ["lao", "laos"]),
+    ("🇰🇭", "Campuchia", "asia", ["cambodia"]),
+    ("🇲🇲", "Myanmar", "asia", ["mien dien", "burma"]),
+    ("🇲🇳", "Mông Cổ", "asia", ["mong co", "mongolia"]),
+    ("🇸🇦", "Ả Rập Xê Út", "asia", ["a rap xe ut", "saudi arabia", "saudi"]),
+    # ---- Châu Âu ----
+    ("🇬🇧", "Anh", "europe", ["anh quoc", "vuong quoc anh", "uk", "england", "britain"]),
+    ("🇫🇷", "Pháp", "europe", ["phap", "france"]),
+    ("🇩🇪", "Đức", "europe", ["duc", "germany"]),
+    ("🇮🇹", "Ý", "europe", ["y", "italy", "italia"]),
+    ("🇪🇸", "Tây Ban Nha", "europe", ["tay ban nha", "spain"]),
+    ("🇵🇹", "Bồ Đào Nha", "europe", ["bo dao nha", "portugal"]),
+    ("🇳🇱", "Hà Lan", "europe", ["ha lan", "netherlands", "holland"]),
+    ("🇧🇪", "Bỉ", "europe", ["bi", "belgium"]),
+    ("🇨🇭", "Thụy Sĩ", "europe", ["thuy si", "switzerland"]),
+    ("🇸🇪", "Thụy Điển", "europe", ["thuy dien", "sweden"]),
+    ("🇳🇴", "Na Uy", "europe", ["na uy", "norway"]),
+    ("🇵🇱", "Ba Lan", "europe", ["ba lan", "poland"]),
+    ("🇷🇺", "Nga", "europe", ["nga", "russia"]),
+    ("🇬🇷", "Hy Lạp", "europe", ["hy lap", "greece"]),
+    ("🇮🇪", "Ireland", "europe", []),
+    # ---- Châu Phi ----
+    ("🇪🇬", "Ai Cập", "africa", ["ai cap", "egypt"]),
+    ("🇿🇦", "Nam Phi", "africa", ["nam phi", "south africa"]),
+    ("🇳🇬", "Nigeria", "africa", []),
+    ("🇰🇪", "Kenya", "africa", []),
+    ("🇲🇦", "Maroc", "africa", ["morocco"]),
+    ("🇩🇿", "Algeria", "africa", ["algerie"]),
+    ("🇬🇭", "Ghana", "africa", []),
+    ("🇪🇹", "Ethiopia", "africa", []),
+    ("🇹🇳", "Tunisia", "africa", []),
+    ("🇸🇳", "Senegal", "africa", []),
+    ("🇨🇲", "Cameroon", "africa", []),
+    ("🇺🇬", "Uganda", "africa", []),
+    ("🇿🇼", "Zimbabwe", "africa", []),
+    ("🇱🇾", "Libya", "africa", []),
+    ("🇦🇴", "Angola", "africa", []),
+    # ---- Châu Mỹ ----
+    ("🇺🇸", "Mỹ (Hoa Kỳ)", "americas", ["my", "hoa ky", "usa", "us", "america"]),
+    ("🇨🇦", "Canada", "americas", []),
+    ("🇲🇽", "Mexico", "americas", []),
+    ("🇧🇷", "Brazil", "americas", []),
+    ("🇦🇷", "Argentina", "americas", []),
+    ("🇨🇴", "Colombia", "americas", []),
+    ("🇨🇱", "Chile", "americas", []),
+    ("🇵🇪", "Peru", "americas", []),
+    ("🇨🇺", "Cuba", "americas", []),
+    ("🇻🇪", "Venezuela", "americas", []),
+    ("🇪🇨", "Ecuador", "americas", []),
+    ("🇺🇾", "Uruguay", "americas", []),
+    ("🇧🇴", "Bolivia", "americas", []),
+    ("🇯🇲", "Jamaica", "americas", []),
+    ("🇵🇦", "Panama", "americas", []),
+    # ---- Châu Đại Dương ----
+    ("🇦🇺", "Úc", "oceania", ["uc", "australia"]),
+    ("🇳🇿", "New Zealand", "oceania", []),
+    ("🇫🇯", "Fiji", "oceania", []),
+    ("🇵🇬", "Papua New Guinea", "oceania", []),
+    ("🇼🇸", "Samoa", "oceania", []),
+    ("🇹🇴", "Tonga", "oceania", []),
+    ("🇻🇺", "Vanuatu", "oceania", []),
+    ("🇵🇼", "Palau", "oceania", []),
+    ("🇰🇮", "Kiribati", "oceania", []),
+    ("🇹🇻", "Tuvalu", "oceania", []),
+    ("🇳🇷", "Nauru", "oceania", []),
+    ("🇸🇧", "Quần đảo Solomon", "oceania", ["quan dao solomon", "solomon islands"]),
+    ("🇫🇲", "Micronesia", "oceania", []),
+    ("🇲🇭", "Quần đảo Marshall", "oceania", ["quan dao marshall", "marshall islands"]),
+    ("🇨🇰", "Quần đảo Cook", "oceania", ["quan dao cook", "cook islands"]),
+]
+
+
+def _normalize_flag_answer(text: str) -> str:
+    """Chuẩn hoá chuỗi để so khớp linh hoạt khi đoán tên quốc gia: bỏ phần
+    trong ngoặc (vd "(Hoa Kỳ)"), bỏ dấu tiếng Việt, chữ thường, bỏ ký tự
+    không phải chữ/số, gộp khoảng trắng thừa."""
+    text = re.sub(r"\([^)]*\)", " ", text.lower())
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9 ]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _flag_pick_country() -> tuple[str, str, str, list[str]]:
+    """Chọn ngẫu nhiên 1 lá cờ từ toàn bộ 5 châu lục."""
+    return random.choice(FLAG_COUNTRIES)
+
+
+def _flag_guess_matches(guess: str, country: tuple[str, str, str, list[str]]) -> bool:
+    _, name, _, aliases = country
+    norm_guess = _normalize_flag_answer(guess)
+    if not norm_guess:
+        return False
+    accepted = [name] + list(aliases)
+    return any(norm_guess == _normalize_flag_answer(a) for a in accepted)
+
+
+class FlagState:
+    """Giữ trạng thái 1 ván Đoán Cờ đang chơi (chỉ lưu tạm trong bộ nhớ view
+    — mất khi bot restart, chấp nhận được vì ván chơi ngắn)."""
+
+    def __init__(self, guild_id: int, user_id: int, country: tuple[str, str, str, list[str]]):
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.country = country
+        self.wrong_guesses: list[str] = []
+
+
+class FlagIntroView(discord.ui.LayoutView):
+    """Bước 1 của /game -> Đoán Cờ: giới thiệu luật chơi + nút Bắt đầu."""
+
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=60)
+        lines = [
+            "### 🚩 Đoán Cờ",
+            f"Nhìn lá cờ, gõ đúng tên quốc gia trong tối đa **{FLAG_MAX_GUESSES} lượt đoán**. "
+            f"Ngân hàng câu hỏi có **15 nước / châu lục** (Á, Âu, Phi, Mỹ, Đại Dương). "
+            f"Tốn **{GAME_TICKET_COST}** {ICON_TICKET} mỗi ván.",
+            f"Đoán đúng nhận **+{FLAG_DELTAN_REWARD} {ICON_DELTAN}** và **+{FLAG_AURA_REWARD} {ICON_AURA}** "
+            f"— hết lượt mà vẫn sai thì bị trừ **-{FLAG_AURA_REWARD} {ICON_AURA}**.",
+        ]
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(FlagStartButton(guild_id, user_id)),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class FlagStartButton(discord.ui.Button):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(label="Bắt đầu", style=discord.ButtonStyle.success, emoji="▶️")
+        self.guild_id, self.user_id = guild_id, user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.user_id):
+            return
+
+        await interaction.response.defer()
+        try:
+            spend = await _spend_ticket_or_none(self.guild_id, self.user_id)
+        except firebase.FirebaseUnavailable:
+            await interaction.edit_original_response(
+                view=GameResultView(f"{ICON_WARNING} Không kết nối được dữ liệu lúc này, thử lại sau nhé!"),
+            )
+            return
+
+        if not spend["ok"]:
+            await interaction.edit_original_response(view=GameResultView(_format_no_ticket_message(spend)))
+            return
+
+        state = FlagState(self.guild_id, self.user_id, _flag_pick_country())
+        await interaction.edit_original_response(view=FlagGameView(state))
+
+
+def _flag_render_lines(state: FlagState) -> list[str]:
+    flag, _, continent_key, _ = state.country
+    remaining = FLAG_MAX_GUESSES - len(state.wrong_guesses)
+    lines = [
+        "### 🚩 Đoán Cờ",
+        f"-# {FLAG_CONTINENTS.get(continent_key, '?')} · Còn **{remaining}/{FLAG_MAX_GUESSES}** lượt đoán",
+        f"# {flag}",
+    ]
+    if state.wrong_guesses:
+        wrong_text = ", ".join(f"~~{g}~~" for g in state.wrong_guesses)
+        lines.append(f"Đã đoán sai: {wrong_text}")
+    return lines
+
+
+class FlagGameView(discord.ui.LayoutView):
+    """Hiển thị lá cờ + số lượt còn lại + nút mở modal để gõ đáp án."""
+
+    def __init__(self, state: FlagState):
+        super().__init__(timeout=120)
+        lines = _flag_render_lines(state)
+        container = discord.ui.Container(
+            discord.ui.TextDisplay("\n".join(lines)),
+            discord.ui.ActionRow(FlagGuessButton(state)),
+            accent_color=discord.Colour.teal(),
+        )
+        self.add_item(container)
+
+
+class FlagGuessButton(discord.ui.Button):
+    def __init__(self, state: FlagState):
+        remaining = FLAG_MAX_GUESSES - len(state.wrong_guesses)
+        super().__init__(label=f"Đoán tên nước ({remaining} lượt còn lại)", style=discord.ButtonStyle.primary, emoji="⌨️")
+        self.state = state
+
+    async def callback(self, interaction: discord.Interaction):
+        if await _reject_if_not_owner(interaction, self.state.user_id):
+            return
+        await interaction.response.send_modal(FlagGuessModal(self.state))
+
+
+class FlagGuessModal(discord.ui.Modal):
+    """Bảng nhập (modal) để gõ tên quốc gia, thay vì phải gõ vào chat."""
+
+    def __init__(self, state: FlagState):
+        super().__init__(title=f"Đoán Cờ — Lượt {len(state.wrong_guesses) + 1}/{FLAG_MAX_GUESSES}")
+        self.state = state
+        self.guess_input = discord.ui.TextInput(
+            label="Tên quốc gia bạn đoán",
+            placeholder="Vd: Việt Nam, Nhật Bản...",
+            min_length=2,
+            max_length=40,
+            required=True,
+        )
+        self.add_item(self.guess_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        state = self.state
+        guess = self.guess_input.value.strip()
+        _, correct_name, _, _ = state.country
+
+        if _flag_guess_matches(guess, state.country):
+            try:
+                await firebase.add_deltan(state.guild_id, state.user_id, FLAG_DELTAN_REWARD)
+                await firebase.add_aura(state.guild_id, state.user_id, FLAG_AURA_REWARD)
+                text = (
+                    f"Đúng r cu {ICON_VERITY_OM_DUNG}\n"
+                    f"Đáp án là: **{correct_name}**\n"
+                    f"Bạn nhận **+{FLAG_DELTAN_REWARD} {ICON_DELTAN}** và **+{FLAG_AURA_REWARD} {ICON_AURA}**!"
+                )
+            except firebase.FirebaseUnavailable:
+                text = (
+                    f"Đúng r cu {ICON_VERITY_OM_DUNG}\n"
+                    f"Đáp án là: **{correct_name}**\n"
+                    f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không cộng được Deltan/Aura do lỗi kết nối."
+                )
+            await interaction.response.edit_message(view=GameResultView(text))
+            return
+
+        state.wrong_guesses.append(guess)
+
+        if len(state.wrong_guesses) >= FLAG_MAX_GUESSES:
+            try:
+                await firebase.add_aura(state.guild_id, state.user_id, -FLAG_AURA_REWARD)
+                text = (
+                    f"Sai {ICON_CUOI_CHAY_NUOC_MAT}{ICON_CUOI_CHAY_NUOC_MAT}{ICON_CUOI_CHAY_NUOC_MAT} "
+                    f"đáp án là: **{correct_name}**\n"
+                    f"Bạn bị trừ **-{FLAG_AURA_REWARD} {ICON_AURA}**."
+                )
+            except firebase.FirebaseUnavailable:
+                text = (
+                    f"Sai {ICON_CUOI_CHAY_NUOC_MAT}{ICON_CUOI_CHAY_NUOC_MAT}{ICON_CUOI_CHAY_NUOC_MAT} "
+                    f"đáp án là: **{correct_name}**\n"
+                    f"{ICON_WARNING} Đã ghi nhận kết quả nhưng không trừ được Aura do lỗi kết nối."
+                )
+            await interaction.response.edit_message(view=GameResultView(text))
+            return
+
+        # Sai nhưng vẫn còn lượt -> cho đoán tiếp.
+        await interaction.response.edit_message(view=FlagGameView(state))
 
 
 # ==================== WORDLE ====================

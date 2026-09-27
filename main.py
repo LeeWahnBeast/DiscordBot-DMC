@@ -672,31 +672,6 @@ async def counter_command(interaction: discord.Interaction):
     )
 
 
-# ==================== LỆNH /video-gần-nhất ====================
-@bot.tree.command(name="video-gần-nhất", description="Tìm và gửi video TikTok gần nhất")
-async def latest_video_command(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
-
-    video = await tiktok.fetch_latest_video(TIKTOK_USERNAME)
-    if not video:
-        await interaction.followup.send(
-            f"{level.ICON_CROSS} Không tìm được video gần nhất của @{TIKTOK_USERNAME} lúc này "
-            f"(TikTok chặn/đổi cấu trúc trang, hoặc tài khoản chưa có video). Thử lại sau nhé!"
-        )
-        return
-
-    lines = [f"## 🎬 Video TikTok mới nhất — @{TIKTOK_USERNAME}"]
-    if video["desc"]:
-        lines.append(video["desc"])
-    if video.get("create_time"):
-        lines.append(f"-# Đăng lúc <t:{video['create_time']}:R>")
-    lines.append(video["url"])
-
-    # Gửi bằng content thường (không phải container) để Discord tự unfurl
-    # xem trước video TikTok từ link.
-    await interaction.followup.send("\n".join(lines))
-
-
 # ==================== LỆNH /help ====================
 HELP_CATEGORIES = [
     {
@@ -729,7 +704,6 @@ HELP_CATEGORIES = [
         "commands": [
             {"name": "thú-tội", "desc": "Gửi một lời thú tội ẩn danh vào kênh thú tội.", "role": "Ai cũng dùng được"},
             {"name": "mix-emoji", "desc": "Ghép 2 emoji thành 1 ảnh mashup (Google Emoji Kitchen).", "role": "Ai cũng dùng được"},
-            {"name": "video-gần-nhất", "desc": "Tìm và gửi video TikTok gần nhất của kênh.", "role": "Ai cũng dùng được"},
         ],
     },
     {
