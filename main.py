@@ -4,6 +4,7 @@ Xem README.md để biết cách setup Discord Bot + Firebase + deploy Render.
 """
 
 import os
+import io
 import time
 import asyncio
 import logging
@@ -17,6 +18,7 @@ import emoji_mixer
 import firebase
 import level
 import tiktok
+import ai_chat
 from keepalive import keep_alive
 
 load_dotenv()
@@ -49,6 +51,12 @@ intents.presences = True  # cần để đọc trạng thái online/offline + ri
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 _message_cooldowns: dict[tuple[int, int], float] = {}
+
+# ==================== AI CHAT (tag bot để chat, dùng Groq) ====================
+AI_CHAT_COOLDOWN_SECONDS = 6  # chặn spam tag bot liên tục, đỡ tốn quota Groq
+AI_CHAT_MAX_HISTORY_USERS = 500  # giới hạn số user giữ lịch sử hội thoại cùng lúc
+_ai_chat_cooldowns: dict[int, float] = {}
+_ai_chat_history: dict[int, list[dict]] = {}  # user_id -> [{"role","content"}, ...] (mất khi bot restart)
 
 
 # ==================== XP KHI NHẮN TIN ====================
@@ -84,6 +92,78 @@ async def on_message(message: discord.Message):
         except discord.HTTPException:
             log.warning(f"Không gửi được thông báo lên level trong #{message.channel} (HTTP lỗi).")
 
+    # Tag bot -> chat với AI (Groq). Đặt cuối cùng để không ảnh hưởng XP/daily ở trên.
+    if bot.user in message.mentions:
+        await _handle_ai_chat(message)
+
+
+async def _handle_ai_chat(message: discord.Message):
+    """Xử lý khi có người @tag bot: gọi Groq, trả lời cộc lốc kiểu gen Z."""
+    now = time.time()
+    last = _ai_chat_cooldowns.get(message.author.id, 0)
+    if now - last < AI_CHAT_COOLDOWN_SECONDS:
+        return
+    _ai_chat_cooldowns[message.author.id] = now
+
+    # Bỏ phần "@TênBot" ra khỏi nội dung, chỉ giữ câu hỏi thật sự.
+    text = message.content
+    for mention in message.mentions:
+        text = text.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+    text = text.strip()
+    if not text:
+        text = "chào"
+
+    # Giới hạn số user giữ lịch sử cùng lúc, tránh phình bộ nhớ vô hạn.
+    if len(_ai_chat_history) > AI_CHAT_MAX_HISTORY_USERS and message.author.id not in _ai_chat_history:
+        _ai_chat_history.pop(next(iter(_ai_chat_history)), None)
+    history = _ai_chat_history.get(message.author.id, [])
+
+    try:
+        async with message.channel.typing():
+            result = await ai_chat.ask_groq(text, history)
+    except discord.HTTPException:
+        # Không hiện được "đang gõ..." (thiếu quyền chẳng hạn) -> vẫn hỏi AI bình thường.
+        result = await ai_chat.ask_groq(text, history)
+
+    if not result:
+        try:
+            await message.reply(
+                f"{level.ICON_WARNING} AI lag/lỗi rồi, tí quay lại hỏi tiếp nhé.",
+                mention_author=False,
+            )
+        except discord.HTTPException:
+            log.warning("Không gửi được thông báo lỗi AI Chat (HTTP lỗi).")
+        return
+
+    reply, mix_pair = result
+
+    history.append({"role": "user", "content": text})
+    history.append({"role": "assistant", "content": reply})
+    _ai_chat_history[message.author.id] = history[-(ai_chat.MAX_HISTORY_TURNS * 2):]
+
+    # Nếu AI chọn ghép 2 emoji, thử lấy ảnh mashup 48x48 để gửi kèm. Lỗi ở
+    # bước này (không tìm thấy ảnh, mạng lỗi...) không được chặn câu trả lời
+    # text chính, nên luôn có fallback gửi text không kèm ảnh.
+    mix_file = None
+    if mix_pair:
+        try:
+            mix_result = await emoji_mixer.find_emoji_mix_url(mix_pair[0], mix_pair[1])
+            if mix_result["ok"]:
+                image_bytes = await emoji_mixer.download_resized(mix_result["url"], size=48)
+                if image_bytes:
+                    mix_file = discord.File(io.BytesIO(image_bytes), filename="mix.png")
+        except Exception:
+            log.exception(f"Lỗi khi tạo ảnh mix emoji cho AI Chat: {mix_pair}")
+            mix_file = None
+
+    try:
+        if mix_file:
+            await message.reply(reply, file=mix_file, mention_author=False)
+        else:
+            await message.reply(reply, mention_author=False)
+    except discord.HTTPException:
+        log.warning("Không gửi được câu trả lời AI Chat (HTTP lỗi).")
+
 
 @tasks.loop(seconds=COOLDOWN_CLEANUP_INTERVAL_SECONDS)
 async def cooldown_cleanup_task():
@@ -92,8 +172,14 @@ async def cooldown_cleanup_task():
     expired = [key for key, ts in _message_cooldowns.items() if ts < cutoff]
     for key in expired:
         _message_cooldowns.pop(key, None)
-    if expired:
-        log.info(f"Đã dọn {len(expired)} cooldown XP hết hạn khỏi bộ nhớ.")
+
+    ai_cutoff = time.time() - AI_CHAT_COOLDOWN_SECONDS
+    ai_expired = [key for key, ts in _ai_chat_cooldowns.items() if ts < ai_cutoff]
+    for key in ai_expired:
+        _ai_chat_cooldowns.pop(key, None)
+
+    if expired or ai_expired:
+        log.info(f"Đã dọn {len(expired)} cooldown XP + {len(ai_expired)} cooldown AI Chat hết hạn khỏi bộ nhớ.")
 
 
 @cooldown_cleanup_task.before_loop
@@ -712,6 +798,11 @@ HELP_CATEGORIES = [
             {
                 "name": "counter",
                 "desc": "Bấm nút để trở thành người nhấn gần nhất — không có ý nghĩa gì, chỉ để vui.",
+                "role": "Ai cũng dùng được",
+            },
+            {
+                "name": "@tag bot",
+                "desc": "Chat với AI (Groq) — trả lời cộc lốc kiểu gen Z, thỉnh thoảng spam emoji cho vui.",
                 "role": "Ai cũng dùng được",
             },
         ],

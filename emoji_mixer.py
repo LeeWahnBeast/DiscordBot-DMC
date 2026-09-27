@@ -13,9 +13,11 @@ hợp lệ, bot thử lần lượt một số mốc ngày đã biết + cả 2 
 dùng HEAD request để kiểm tra ảnh có tồn tại không.
 """
 
+import io
 import logging
 
 import aiohttp
+from PIL import Image
 
 log = logging.getLogger("emoji_mixer")
 
@@ -91,3 +93,31 @@ async def find_emoji_mix_url(emoji1: str, emoji2: str) -> dict:
         return {"ok": False, "reason": "network"}
 
     return {"ok": False, "reason": "not_found"}
+
+
+async def download_resized(url: str, size: int = 48) -> bytes | None:
+    """
+    Tải ảnh ghép từ `url` rồi resize về `size`x`size` px (giữ trong suốt),
+    trả về bytes ảnh PNG. Trả về None nếu tải/xử lý lỗi.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    log.warning(f"Tải ảnh mix emoji lỗi, status {resp.status}: {url}")
+                    return None
+                raw = await resp.read()
+    except Exception:
+        log.exception(f"Lỗi mạng khi tải ảnh mix emoji: {url}")
+        return None
+
+    try:
+        with Image.open(io.BytesIO(raw)) as img:
+            img = img.convert("RGBA")
+            img = img.resize((size, size), Image.LANCZOS)
+            out = io.BytesIO()
+            img.save(out, format="PNG")
+            return out.getvalue()
+    except Exception:
+        log.exception(f"Lỗi khi resize ảnh mix emoji: {url}")
+        return None

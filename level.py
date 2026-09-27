@@ -3,6 +3,7 @@ Logic XP / Level / Aura / Deltan + giao diện Components V2 (LevelUp, Hồ sơ 
 Bảng xếp hạng, Thú tội ẩn danh).
 """
 
+import io
 import re
 import time
 import random
@@ -1054,7 +1055,8 @@ class HelpView(discord.ui.LayoutView):
         lines = [f"## {ICON_BADGE} DANH SÁCH LỆNH", f"### {cat['title']}"]
         for cmd in cat["commands"]:
             role_note = f" · *{cmd['role']}*" if cmd.get("role") else ""
-            lines.append(f"{ICON_BULLET} `/{cmd['name']}` — {cmd['desc']}{role_note}")
+            cmd_label = f"`/{cmd['name']}`" if not cmd["name"].startswith("@") else f"`{cmd['name']}`"
+            lines.append(f"{ICON_BULLET} {cmd_label} — {cmd['desc']}{role_note}")
 
         container = discord.ui.Container(
             discord.ui.TextDisplay("\n".join(lines)),
@@ -2516,11 +2518,14 @@ class MixEmojiModal(discord.ui.Modal):
             await interaction.followup.send(text, ephemeral=True)
             return
 
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(f"### 🍳 {emoji1} + {emoji2}"),
-            discord.ui.MediaGallery(discord.MediaGalleryItem(result["url"])),
-            accent_color=discord.Colour.blurple(),
-        )
-        result_view = discord.ui.LayoutView(timeout=None)
-        result_view.add_item(container)
-        await interaction.followup.send(view=result_view)
+        image_bytes = await emoji_mixer.download_resized(result["url"], size=48)
+        if not image_bytes:
+            await interaction.followup.send(
+                f"{ICON_WARNING} Tìm thấy ảnh ghép nhưng tải/resize bị lỗi, thử lại sau nhé!",
+                ephemeral=True,
+            )
+            return
+
+        # Gửi ảnh dạng file đính kèm thường (48x48px), KHÔNG dùng container/UI.
+        file = discord.File(io.BytesIO(image_bytes), filename="mix.png")
+        await interaction.followup.send(content=f"{emoji1}+{emoji2}", file=file)
