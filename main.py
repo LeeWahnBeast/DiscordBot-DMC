@@ -4,7 +4,6 @@ Xem README.md để biết cách setup Discord Bot + Firebase + deploy Render.
 """
 
 import os
-import io
 import time
 import asyncio
 import logging
@@ -53,7 +52,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 _message_cooldowns: dict[tuple[int, int], float] = {}
 
 # ==================== AI CHAT (tag bot để chat, dùng Groq) ====================
-AI_CHAT_COOLDOWN_SECONDS = 6  # chặn spam tag bot liên tục, đỡ tốn quota Groq
+AI_CHAT_COOLDOWN_SECONDS = 2  # chặn spam tag bot liên tục, đỡ tốn quota Groq
 AI_CHAT_MAX_HISTORY_USERS = 500  # giới hạn số user giữ lịch sử hội thoại cùng lúc
 _ai_chat_cooldowns: dict[int, float] = {}
 _ai_chat_history: dict[int, list[dict]] = {}  # user_id -> [{"role","content"}, ...] (mất khi bot restart)
@@ -123,12 +122,12 @@ async def _handle_ai_chat(message: discord.Message):
 
     try:
         async with message.channel.typing():
-            result = await ai_chat.ask_groq(text, history)
+            reply = await ai_chat.ask_groq(text, history)
     except discord.HTTPException:
         # Không hiện được "đang gõ..." (thiếu quyền chẳng hạn) -> vẫn hỏi AI bình thường.
-        result = await ai_chat.ask_groq(text, history)
+        reply = await ai_chat.ask_groq(text, history)
 
-    if not result:
+    if not reply:
         try:
             await message.reply(
                 f"{level.ICON_WARNING} AI lag/lỗi rồi, tí quay lại hỏi tiếp nhé.",
@@ -138,32 +137,12 @@ async def _handle_ai_chat(message: discord.Message):
             log.warning("Không gửi được thông báo lỗi AI Chat (HTTP lỗi).")
         return
 
-    reply, mix_pair = result
-
     history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": reply})
     _ai_chat_history[message.author.id] = history[-(ai_chat.MAX_HISTORY_TURNS * 2):]
 
-    # Nếu AI chọn ghép 2 emoji, thử lấy ảnh mashup 48x48 để gửi kèm. Lỗi ở
-    # bước này (không tìm thấy ảnh, mạng lỗi...) không được chặn câu trả lời
-    # text chính, nên luôn có fallback gửi text không kèm ảnh.
-    mix_file = None
-    if mix_pair:
-        try:
-            mix_result = await emoji_mixer.find_emoji_mix_url(mix_pair[0], mix_pair[1])
-            if mix_result["ok"]:
-                image_bytes = await emoji_mixer.download_resized(mix_result["url"], size=48)
-                if image_bytes:
-                    mix_file = discord.File(io.BytesIO(image_bytes), filename="mix.png")
-        except Exception:
-            log.exception(f"Lỗi khi tạo ảnh mix emoji cho AI Chat: {mix_pair}")
-            mix_file = None
-
     try:
-        if mix_file:
-            await message.reply(reply, file=mix_file, mention_author=False)
-        else:
-            await message.reply(reply, mention_author=False)
+        await message.reply(reply, mention_author=False)
     except discord.HTTPException:
         log.warning("Không gửi được câu trả lời AI Chat (HTTP lỗi).")
 
