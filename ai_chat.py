@@ -111,7 +111,7 @@ async def ask_groq(
         "model": GROQ_MODEL,
         "messages": messages,
         "temperature": 0.9,
-        "max_tokens": 250,
+        "max_tokens": 500,
         "response_format": {"type": "json_object"},
     }
     headers = {
@@ -126,7 +126,12 @@ async def ask_groq(
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    log.warning(f"Groq API trả về status {resp.status}: {body[:300]}")
+                    if resp.status == 400 and "json_validate_failed" in body:
+                        log.warning(
+                            f"Groq trả JSON không hợp lệ (có thể do hết max_tokens giữa chừng): {body[:300]}"
+                        )
+                    else:
+                        log.warning(f"Groq API trả về status {resp.status}: {body[:300]}")
                     return None
                 data = await resp.json()
     except Exception:
