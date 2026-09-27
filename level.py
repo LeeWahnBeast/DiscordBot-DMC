@@ -757,18 +757,34 @@ def _classify_roles(member: discord.Member) -> dict[str, list[discord.Role]]:
     return groups
 
 
+def _has_elevated_role(member: discord.Member) -> bool:
+    """True nếu member là chủ server hoặc có role Admin/Mod/Owner (role "cấp cao").
+    Dùng để ẩn hẳn phần Vai trò khỏi hồ sơ công dân của dân thường."""
+    groups = _classify_roles(member)
+    return any(
+        groups[key]
+        for key in (f"{ICON_CROWN} Owner", f"{ICON_ADMIN} Admin", f"{ICON_MOD} Mod")
+    )
+
+
+ICON_STATUS_HEADER = "<:song:1553687174581325884>"
+ICON_STATUS_ONLINE = "<:online:1553687171616084118>"
+ICON_STATUS_IDLE = "<:cho:1553687096022274159>"
+ICON_STATUS_DND = "<:khonglamphien:1553687125906427924>"
+ICON_STATUS_OFFLINE = "<:offline:1553687169074331678>"
+
 _STATUS_LABELS = {
-    discord.Status.online: ("🟢", "Đang online"),
-    discord.Status.idle: ("🌙", "Đang rời đi (Idle)"),
-    discord.Status.dnd: ("⛔", "Không làm phiền (DND)"),
-    discord.Status.offline: ("⚫", "Offline"),
-    discord.Status.invisible: ("⚫", "Offline"),
+    discord.Status.online: (ICON_STATUS_ONLINE, "Đang online"),
+    discord.Status.idle: (ICON_STATUS_IDLE, "Đang rời đi (Idle)"),
+    discord.Status.dnd: (ICON_STATUS_DND, "Không làm phiền (DND)"),
+    discord.Status.offline: (ICON_STATUS_OFFLINE, "Offline"),
+    discord.Status.invisible: (ICON_STATUS_OFFLINE, "Offline"),
 }
 
 
 def _format_presence_block(member: discord.Member) -> str:
     """Trạng thái online/offline + rich presence (game đang chơi, Spotify, v.v.) của member."""
-    emoji, label = _STATUS_LABELS.get(member.status, ("⚫", "Offline"))
+    emoji, label = _STATUS_LABELS.get(member.status, (ICON_STATUS_OFFLINE, "Offline"))
     lines = [f"{emoji} **{label}**"]
 
     activities = [a for a in (member.activities or []) if a is not None]
@@ -882,17 +898,20 @@ class CitizenView(discord.ui.LayoutView):
             f"{ICON_STREAK} **Daily Streak:** {format_daily_streak(user_data)}",
         ]
 
+        # Chỉ hiển thị mục Vai trò cho chủ server/Admin/Mod — dân thường không có
+        # role "cấp cao" thì ẩn hẳn mục này đi, tránh gây hiểu lầm là có quyền.
+        show_roles = _has_elevated_role(member)
         roles_lines = [
             "### 🎖️ Vai trò",
             _format_roles_block(member),
         ]
 
         presence_lines = [
-            "### 📶 Trạng thái Discord",
+            f"### {ICON_STATUS_HEADER} Trạng thái Discord",
             _format_presence_block(member),
         ]
 
-        container = discord.ui.Container(
+        container_items = [
             discord.ui.Section(
                 "\n".join(header_lines),
                 accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
@@ -901,10 +920,12 @@ class CitizenView(discord.ui.LayoutView):
             discord.ui.TextDisplay("\n".join(stats_lines)),
             discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
             discord.ui.TextDisplay("\n".join(presence_lines)),
-            discord.ui.Separator(spacing=discord.SeparatorSpacing.small),
-            discord.ui.TextDisplay("\n".join(roles_lines)),
-            accent_color=discord.Colour.blurple(),
-        )
+        ]
+        if show_roles:
+            container_items.append(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container_items.append(discord.ui.TextDisplay("\n".join(roles_lines)))
+
+        container = discord.ui.Container(*container_items, accent_color=discord.Colour.blurple())
         self.add_item(container)
 
 
