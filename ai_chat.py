@@ -141,6 +141,7 @@ async def ask_groq(
 
     parsed = _parse_response(content)
     if parsed is None:
+        log.warning(f"Không parse được nội dung Groq trả về (rỗng hoặc thiếu 'reply'): {content!r}")
         return None
     reply, mix_pair = parsed
 

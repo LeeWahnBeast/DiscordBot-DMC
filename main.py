@@ -99,9 +99,12 @@ async def on_message(message: discord.Message):
 
 async def _handle_ai_chat(message: discord.Message):
     """Xử lý khi có người @tag bot: gọi Groq, trả lời cộc lốc kiểu gen Z."""
+    log.info(f"AI Chat được gọi bởi {message.author.id} trong #{message.channel}: {message.content!r}")
+
     now = time.time()
     last = _ai_chat_cooldowns.get(message.author.id, 0)
     if now - last < AI_CHAT_COOLDOWN_SECONDS:
+        log.info(f"AI Chat bị chặn do cooldown (còn {AI_CHAT_COOLDOWN_SECONDS - (now - last):.1f}s) cho {message.author.id}.")
         return
     _ai_chat_cooldowns[message.author.id] = now
 
